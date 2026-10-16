@@ -5,6 +5,7 @@ using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using ExcelDataReader;
+using Markdig;
 
 CultureInfo.DefaultThreadCurrentCulture = CultureInfo.InvariantCulture;
 CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
@@ -168,10 +169,67 @@ static class Ta
     }
 }
 
+// 週足が◎の銘柄だけ、Claude API で判定の妥当性を一言チェックする(ANTHROPIC_API_KEY 未設定なら何もしない)
+static class Ai
+{
+    const string Model = "claude-sonnet-5-5";
+    const string System = "あなたは投資初心者に株を説明する案内役。機械判定で週足◎(上昇トレンド・MACDゴールデンクロス直後は判定済みで確認不要)となった銘柄について、渡された数値(RSI・Stoch・短期線との距離・損切り・目標・RR・出来高の推移)だけから、今買ってよさそうかを2文・合計100字程度の日本語で答える。1文目で結論(買ってよさそう/様子見/見送り寄りのどれか)を言い、続けて理由と注意点を述べる。専門用語(RSI・Stoch・ATR・RRなど)はそのまま使わず『買われすぎの度合い』『平均より上がりすぎていないか』『損失に対する利益の見込み』『取引量』のようなやさしい言葉に言い換える。出来高(取引量)が増えているか減っているかにも触れる。装飾記号は使わない。ファンダは考慮しない。あわせて今のエントリーとしての総合評価を100点満点で採点する(目安: 80以上=買い好機、60台=条件付きで可、40〜50台=様子見、30以下=見送り)。出力は次のJSONのみ(前後に文章やコードブロックを付けない): {\"score\":0〜100の整数,\"comment\":\"2文・100字程度のコメント\"}";
+    static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(60) };
+
+    public static async Task<Dictionary<string, (string Score, string Text)>> Check(List<Screen.Result> hits)
+    {
+        var targets = hits.Where(x => x.Hits.ContainsKey("週足")).ToList();
+        var res = new Dictionary<string, (string Score, string Text)>();
+        var key = Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY");
+        if (targets.Count == 0) return res;
+        if (string.IsNullOrEmpty(key)) { Console.Error.WriteLine("ANTHROPIC_API_KEY 未設定のためAIチェックをスキップ"); return res; }
+        Console.Error.WriteLine($"AIチェック中 ({targets.Count}銘柄)...");
+        await Parallel.ForEachAsync(targets, new ParallelOptions { MaxDegreeOfParallelism = 4 }, async (x, _) =>
+        {
+            (string Score, string Text) r;
+            try
+            {
+                try { r = Parse(await Ask(key, x)); }
+                catch (Exception e) when (e is JsonException or FormatException) { r = Parse(await Ask(key, x)); } // 稀にJSONが崩れるので1回再試行
+            }
+            catch (Exception e) { r = ("-", "AIチェック不可: " + e.Message); }
+            lock (res) res[x.Sym] = (r.Score, r.Text.Replace("|", "/").Replace("*", "").ReplaceLineEndings(" ").Trim());
+        });
+        return res;
+    }
+
+    // 返答から最初の { 〜 最後の } を取り出して score / comment を読む(コードブロックで囲まれても動く)
+    static (string Score, string Text) Parse(string s)
+    {
+        int a = s.IndexOf('{'), b = s.LastIndexOf('}');
+        if (a < 0 || b < a) throw new FormatException("JSONなし");
+        using var d = JsonDocument.Parse(s[a..(b + 1)]);
+        var score = d.RootElement.GetProperty("score").GetInt32();
+        return (Math.Clamp(score, 0, 100).ToString(), d.RootElement.GetProperty("comment").GetString() ?? "");
+    }
+
+    static async Task<string> Ask(string key, Screen.Result x)
+    {
+        var w = x.Hits["週足"];
+        var prompt = $"{x.Sym} {x.Name} 終値{x.Close:#,0.##}\n週足: RSI{w.Rsi:F0} Stoch{w.Stoch:F0} 短期線乖離{w.AtrDist:+0.0;-0.0}ATR 損切り{w.Stop:#,0.##} "
+            + (w.Target is { } t ? $"目標{t:#,0.##} RR{w.Rr:F1}" : "高値更新中(上値抵抗なし)")
+            + $"\n{x.Vol}\n他に◎の時間軸: {string.Join(",", x.Hits.Keys.Where(k => k != "週足").DefaultIfEmpty("なし"))}";
+        var body = JsonSerializer.Serialize(new { model = Model, max_tokens = 1500, system = System, messages = new[] { new { role = "user", content = prompt } } });
+        using var req = new HttpRequestMessage(HttpMethod.Post, "https://api.anthropic.com/v1/messages") { Content = new StringContent(body, Encoding.UTF8, "application/json") };
+        req.Headers.Add("x-api-key", key); req.Headers.Add("anthropic-version", "2023-06-01");
+        using var rsp = await Http.SendAsync(req);
+        var json = await rsp.Content.ReadAsStringAsync();
+        if (!rsp.IsSuccessStatusCode) throw new Exception($"{(int)rsp.StatusCode}");
+        using var doc = JsonDocument.Parse(json);
+        // 先頭が thinking ブロックのことがあるので text ブロックを探す
+        return string.Concat(doc.RootElement.GetProperty("content").EnumerateArray().Where(b => b.GetProperty("type").GetString() == "text").Select(b => b.GetProperty("text").GetString()));
+    }
+}
+
 static class Screen
 {
-    record Hit(double Rsi, double Stoch, double AtrDist, double Stop, double? Target, double? Rr);
-    record Result(string Sym, string Name, DateOnly Last, double Close, Dictionary<string, Hit> Hits, Dictionary<string, string> Drops);
+    public record Hit(double Rsi, double Stoch, double AtrDist, double Stop, double? Target, double? Rr);
+    public record Result(string Sym, string Name, DateOnly Last, double Close, Dictionary<string, Hit> Hits, Dictionary<string, string> Drops, string Vol);
 
     static async Task<List<(string code, string name)>> PrimeList()
     {
@@ -213,6 +271,16 @@ static class Screen
         return new Hit(r, st, d, stop, up ? null : res, up ? null : rr);
     }
 
+    // AIチェック用の出来高サマリ(週ごとの日平均出来高の推移と、5/20日比・20/60日比)
+    static string VolSummary(List<Bar> rows)
+    {
+        var v = rows.Select(r => r.V).ToArray();
+        double Avg(int n) => Math.Max(v[^n..].Average(), 1);
+        var weeks = rows.GroupBy(r => (ISOWeek.GetYear(r.D.ToDateTime(default)), ISOWeek.GetWeekOfYear(r.D.ToDateTime(default))))
+            .TakeLast(6).Select(g => $"{g.Average(r => r.V) / 10000:#,0.#}");
+        return $"出来高(日平均,万株) 直近6週: {string.Join("→", weeks)} / 5日÷20日={Avg(5) / Avg(20):F2} 20日÷60日={Avg(20) / Avg(60):F2}";
+    }
+
     static async Task<Result?> Scan((string code, string name) it, List<string> errs)
     {
         (string Sym, string Name, List<Bar> Rows) f;
@@ -228,7 +296,7 @@ static class Screen
         var last = f.Rows[^1];
         return new(f.Sym, it.name, last.D, last.C,
             js.Where(x => x.j is Hit).ToDictionary(x => x.tf, x => (Hit)x.j!),
-            js.Where(x => x.j is string).ToDictionary(x => x.tf, x => (string)x.j!));
+            js.Where(x => x.j is string).ToDictionary(x => x.tf, x => (string)x.j!), VolSummary(f.Rows));
     }
 
     // 数値から組み立てる定型の一言コメント(AIは使わない)
@@ -240,24 +308,21 @@ static class Screen
         return $"{pos}、{room}{heat}";
     }
 
-    static string Markdown(DateOnly last, int scanned, int errors, List<Result> hits, List<Result> drops)
+    static string Markdown(DateOnly last, int scanned, int errors, List<Result> hits, Dictionary<string, (string Score, string Text)> ai)
     {
         string[] tfs = ["月足", "週足", "日足"];
         string Join(Result x, Func<Hit, string> f) => hits.Count == 0 ? "" : string.Join(" / ", x.Hits.Select(kv => (x.Hits.Count > 1 ? kv.Key + ":" : "") + f(kv.Value)));
         var m = new StringBuilder();
         m.AppendLine($"# プライム◎スクリーニング ({last:yyyy-MM-dd})\n");
-        m.AppendLine($"- 対象 {scanned} 銘柄 / ◎ **{hits.Count}** 銘柄 / 精査で除外 {drops.Count} 銘柄 / 取得エラー {errors} 件\n");
+        m.AppendLine($"- 対象 {scanned} 銘柄 / ◎ **{hits.Count}** 銘柄 / 取得エラー {errors} 件\n");
         m.AppendLine("## ◎銘柄\n");
-        m.AppendLine("| symbol | 銘柄名 | 終値 | 月足 | 週足 | 日足 | RSI | 短期線乖離 | 損切り | 目標(RR) | コメント |");
-        m.AppendLine("|---|---|--:|:-:|:-:|:-:|--:|--:|--:|--:|---|");
+        m.AppendLine("| symbol | 銘柄名 | 終値 | 月足 | 週足 | 日足 | 損切り | 目標(RR) | コメント | AIスコア | AIチェック(週足◎のみ) |");
+        m.AppendLine("|---|---|--:|:-:|:-:|:-:|--:|--:|---|--:|---|");
         foreach (var x in hits)
-            m.AppendLine($"| {x.Sym} | {x.Name} | {x.Close:#,0.##} | " + string.Join(" | ", tfs.Select(t => x.Hits.ContainsKey(t) ? "◎" : ""))
-                + $" | {Join(x, j => j.Rsi.ToString("F0"))} | {Join(x, j => $"{Math.Round(j.AtrDist, 1) + 0.0:+0.0;-0.0}ATR")} | {Join(x, j => j.Stop.ToString("#,0"))}"
-                + $" | {Join(x, j => j.Target is { } t ? $"{t:#,0.##} ({j.Rr:F1})" : "高値更新中")} | {Join(x, Comment)} |");
+            m.AppendLine($"| {x.Sym} | [{x.Name}](https://finance.yahoo.co.jp/quote/{x.Sym}/chart) | {x.Close:#,0.##} | " + string.Join(" | ", tfs.Select(t => x.Hits.ContainsKey(t) ? "◎" : ""))
+                + $" | {Join(x, j => j.Stop.ToString("#,0"))}"
+                + $" | {Join(x, j => j.Target is { } t ? $"{t:#,0.##} ({j.Rr:F1})" : "高値更新中")} | {Join(x, Comment)} | {(ai.TryGetValue(x.Sym, out var a) ? $"{a.Score} | {a.Text}" : " | ")} |");
         if (hits.Count == 0) m.AppendLine("| ◎なし | | | | | | | | | | |");
-        m.AppendLine("\n## 精査で除外(基本条件は満たしたが…)\n");
-        m.AppendLine("| symbol | 銘柄名 | 時間軸 | 理由 |\n|---|---|:-:|---|");
-        foreach (var x in drops) foreach (var kv in x.Drops) m.AppendLine($"| {x.Sym} | {x.Name} | {kv.Key} | {kv.Value} |");
         m.AppendLine("\n---\n損切り=短期線-1ATR、目標=直近60本高値。ファンダ・決算日程は未考慮、投資判断は自己責任。");
         return m.ToString();
     }
@@ -266,6 +331,18 @@ static class Screen
     {
         const int w = 40; int n = done * w / total;
         Console.Error.Write($"\r[{new string('#', n)}{new string('-', w - n)}] {done}/{total} ({done * 100 / total}%)");
+    }
+
+    // md と同じ場所に表付きの見やすい HTML を作り、既定ブラウザで開く
+    static void OpenHtml(string mdPath, string md)
+    {
+        const string css = "body{font-family:'Yu Gothic UI',sans-serif;max-width:1200px;margin:2em auto;padding:0 1em;line-height:1.6}"
+            + "table{border-collapse:collapse}th,td{border:1px solid #ccc;padding:4px 10px}th{background:#f0f0f0}tr:nth-child(even){background:#fafafa}";
+        var body = Markdig.Markdown.ToHtml(md, new Markdig.MarkdownPipelineBuilder().UseAdvancedExtensions().Build())
+            .Replace("<a href=", "<a target=\"_blank\" rel=\"noopener\" href="); // リンクは新しいタブで開く
+        var html = Path.ChangeExtension(Path.GetFullPath(mdPath), ".html");
+        File.WriteAllText(html, $"<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>{Path.GetFileNameWithoutExtension(mdPath)}</title><style>{css}</style></head><body>{body}</body></html>", new UTF8Encoding(false));
+        System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(html) { UseShellExecute = true });
     }
 
     public static async Task<int> Run(int? limit)
@@ -282,17 +359,17 @@ static class Screen
         var ok = res.Where(x => x != null).Select(x => x!).ToList();
         var hits = ok.Where(x => x.Hits.Count > 0)
             .OrderByDescending(x => x.Hits.Count).ThenByDescending(x => x.Hits.Values.Max(j => j.Rr ?? 9)).ToList();
-        var drops = ok.Where(x => x.Drops.Count > 0 && x.Hits.Count == 0).ToList();
         if (ok.Count == 0) { Console.Error.WriteLine($"全件取得失敗(例: {errs.FirstOrDefault()})。レート制限の可能性があるので時間をおいて再実行してください"); return 1; }
         var last = ok.Max(x => x.Last);
 
         var dir = Path.Combine("analysis", last.ToString("yyyyMMdd")); Directory.CreateDirectory(dir);
         var path = Path.Combine(dir, "prime_hanamaru.md");
-        var md = Markdown(last, list.Count, errs.Count, hits, drops);
+        var md = Markdown(last, list.Count, errs.Count, hits, await Ai.Check(hits));
         File.WriteAllText(path, md, new UTF8Encoding(false));
-        Console.WriteLine($"完了: ◎{hits.Count}銘柄 / 除外{drops.Count}銘柄 / エラー{errs.Count}件");
+        Console.WriteLine($"完了: ◎{hits.Count}銘柄 / エラー{errs.Count}件");
         foreach (var e in errs.Take(5)) Console.Error.WriteLine("ERR " + e);
         Console.WriteLine("保存先: " + path);
+        OpenHtml(path, md);
         return 0;
     }
 }

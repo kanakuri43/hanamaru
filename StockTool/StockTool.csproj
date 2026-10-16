@@ -13,6 +13,7 @@
 
   <ItemGroup>
     <PackageReference Include="ExcelDataReader" Version="3.9.0" />
+    <PackageReference Include="Markdig" Version="1.4.0" />
   </ItemGroup>
 
 </Project>
