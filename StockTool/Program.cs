@@ -2,10 +2,10 @@
 //   stocks ta <コード>...   指標を出力し analysis/<日付>/<symbol>_<名前>.md に保存
 //   stocks screen [上限]    プライム全銘柄を◎判定し analysis/<日付>/prime_hanamaru.md に保存
 using System.Globalization;
+using System.Net;
 using System.Text;
 using System.Text.Json;
 using ExcelDataReader;
-using Markdig;
 
 CultureInfo.DefaultThreadCurrentCulture = CultureInfo.InvariantCulture;
 CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
@@ -173,7 +173,17 @@ static class Ta
 static class Ai
 {
     const string Model = "claude-sonnet-5-5";
-    const string System = "あなたは投資初心者に株を説明する案内役。機械判定で週足◎(上昇トレンド・MACDゴールデンクロス直後は判定済みで確認不要)となった銘柄について、渡された数値(RSI・Stoch・短期線との距離・損切り・目標・RR・出来高の推移)だけから、今買ってよさそうかを2文・合計100字程度の日本語で答える。1文目で結論(買ってよさそう/様子見/見送り寄りのどれか)を言い、続けて理由と注意点を述べる。専門用語(RSI・Stoch・ATR・RRなど)はそのまま使わず『買われすぎの度合い』『平均より上がりすぎていないか』『損失に対する利益の見込み』『取引量』のようなやさしい言葉に言い換える。出来高(取引量)が増えているか減っているかにも触れる。装飾記号は使わない。ファンダは考慮しない。あわせて今のエントリーとしての総合評価を100点満点で採点する(目安: 80以上=買い好機、60台=条件付きで可、40〜50台=様子見、30以下=見送り)。出力は次のJSONのみ(前後に文章やコードブロックを付けない): {\"score\":0〜100の整数,\"comment\":\"2文・100字程度のコメント\"}";
+    const string System = """
+        あなたは投資初心者に株を説明する案内役。機械判定で週足◎(上昇トレンド・MACDゴールデンクロス直後は判定済みで確認不要)となった銘柄を、渡された数値だけから、今エントリーする魅力で採点する。ファンダは考慮しない。
+        採点は下の配点表で項目ごとに整数で行い、基準に沿って厳しめにつけ、銘柄ごとの違いをはっきり出す(◎を通った銘柄の平均が50点前後になるイメージ。満点級は滅多に出さない)。
+        - pullback(押し目の質, 0〜25): 短期線との距離が0〜0.3ATRで20〜25、0.3〜1ATRで12〜19、1〜2ATRで5〜11。直近週足の終値が一直線に上がっていれば減点、押して反発した形なら加点。
+        - upside(上値余地, 0〜25): RR3以上、または高値更新中で52週高値より上なら20〜25、RR2〜3で13〜19、RR1.5〜2で5〜12。52週高値までの距離が近いほど減点。
+        - volume(出来高の傾向, 0〜25): 直近の出来高が増加傾向(5日÷20日が1.1超)かつ上昇日の出来高が下落日より多いなら18〜25、横ばいなら9〜17、細っている(5日÷20日が0.8未満など)なら0〜8。
+        - heat(過熱感の無さ, 0〜15): RSIとStochが低いほど高得点。RSI60超またはStoch70超は0〜6、50前後は7〜11、45以下は12〜15。
+        - trend(トレンドの強さ, 0〜10): 移動平均の傾き(5週間の変化)が大きく、現在値が平均線の上にあり、他の時間軸も◎なら高得点。傾きが弱い・横ばいなら低得点。
+        comment は、初心者向けに2文・合計100字程度で、結論(買ってよさそう/様子見/見送り寄り)→理由・注意点の順。RSI・Stoch・ATR・RRなどの専門用語は『買われすぎの度合い』『平均より上がりすぎていないか』『損失に対する利益の見込み』『取引量』のようにやさしい言葉に言い換える。装飾記号は使わない。
+        出力は次のJSONのみ(前後に文章やコードブロックを付けない): {"pullback":整数,"upside":整数,"volume":整数,"heat":整数,"trend":整数,"comment":"..."}
+        """;
     static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(60) };
 
     public static async Task<Dictionary<string, (string Score, string Text)>> Check(List<Screen.Result> hits)
@@ -204,8 +214,11 @@ static class Ai
         int a = s.IndexOf('{'), b = s.LastIndexOf('}');
         if (a < 0 || b < a) throw new FormatException("JSONなし");
         using var d = JsonDocument.Parse(s[a..(b + 1)]);
-        var score = d.RootElement.GetProperty("score").GetInt32();
-        return (Math.Clamp(score, 0, 100).ToString(), d.RootElement.GetProperty("comment").GetString() ?? "");
+        // 項目ごとの点数を上限で切って合計する(AIの足し算ミスや配点超過を防ぐ)
+        (string Key, string Label, int Max)[] items = [("pullback", "押", 25), ("upside", "余", 25), ("volume", "出", 25), ("heat", "熱", 15), ("trend", "勢", 10)];
+        var pts = items.Select(i => d.RootElement.TryGetProperty(i.Key, out var p) && p.TryGetInt32(out var n) ? Math.Clamp(n, 0, i.Max) : throw new FormatException(i.Key + "なし")).ToArray();
+        var detail = string.Join(" ", items.Zip(pts, (i, p) => $"{i.Label}{p}"));
+        return ($"<b>{pts.Sum()}</b><br><small>{detail}</small>", d.RootElement.TryGetProperty("comment", out var c) ? c.GetString() ?? "" : "");
     }
 
     static async Task<string> Ask(string key, Screen.Result x)
@@ -213,7 +226,7 @@ static class Ai
         var w = x.Hits["週足"];
         var prompt = $"{x.Sym} {x.Name} 終値{x.Close:#,0.##}\n週足: RSI{w.Rsi:F0} Stoch{w.Stoch:F0} 短期線乖離{w.AtrDist:+0.0;-0.0}ATR 損切り{w.Stop:#,0.##} "
             + (w.Target is { } t ? $"目標{t:#,0.##} RR{w.Rr:F1}" : "高値更新中(上値抵抗なし)")
-            + $"\n{x.Vol}\n他に◎の時間軸: {string.Join(",", x.Hits.Keys.Where(k => k != "週足").DefaultIfEmpty("なし"))}";
+            + $"\n{x.Ctx}\n他に◎の時間軸: {string.Join(",", x.Hits.Keys.Where(k => k != "週足").DefaultIfEmpty("なし"))}";
         var body = JsonSerializer.Serialize(new { model = Model, max_tokens = 1500, system = System, messages = new[] { new { role = "user", content = prompt } } });
         using var req = new HttpRequestMessage(HttpMethod.Post, "https://api.anthropic.com/v1/messages") { Content = new StringContent(body, Encoding.UTF8, "application/json") };
         req.Headers.Add("x-api-key", key); req.Headers.Add("anthropic-version", "2023-06-01");
@@ -229,7 +242,7 @@ static class Ai
 static class Screen
 {
     public record Hit(double Rsi, double Stoch, double AtrDist, double Stop, double? Target, double? Rr);
-    public record Result(string Sym, string Name, DateOnly Last, double Close, Dictionary<string, Hit> Hits, Dictionary<string, string> Drops, string Vol);
+    public record Result(string Sym, string Name, DateOnly Last, double Close, Dictionary<string, Hit> Hits, Dictionary<string, string> Drops, string Ctx);
 
     static async Task<List<(string code, string name)>> PrimeList()
     {
@@ -271,16 +284,26 @@ static class Screen
         return new Hit(r, st, d, stop, up ? null : res, up ? null : rr);
     }
 
-    // AIチェック用の出来高サマリ(週ごとの日平均出来高の推移と、5/20日比・20/60日比)
-    static string VolSummary(List<Bar> rows)
+    // AIチェック用の判断材料(出来高の推移・上昇日/下落日の出来高・週足の推移・52週高値までの距離・移動平均の傾き)
+    static string Context(List<Bar> rows, Series w)
     {
         var v = rows.Select(r => r.V).ToArray();
         double Avg(int n) => Math.Max(v[^n..].Average(), 1);
         var weeks = rows.GroupBy(r => (ISOWeek.GetYear(r.D.ToDateTime(default)), ISOWeek.GetWeekOfYear(r.D.ToDateTime(default))))
             .TakeLast(6).Select(g => $"{g.Average(r => r.V) / 10000:#,0.#}");
-        return $"出来高(日平均,万株) 直近6週: {string.Join("→", weeks)} / 5日÷20日={Avg(5) / Avg(20):F2} 20日÷60日={Avg(20) / Avg(60):F2}";
+        var last20 = Enumerable.Range(rows.Count - 20, 20).ToList();
+        double Mean(IEnumerable<double> x) => x.Any() ? x.Average() : 0;
+        var upV = Mean(last20.Where(i => rows[i].C > rows[i - 1].C).Select(i => rows[i].V));
+        var dnV = Mean(last20.Where(i => rows[i].C < rows[i - 1].C).Select(i => rows[i].V));
+        var c = w.C; int n = c.Length;
+        double hi = w.H[^52..].Max(), lo = w.L[^52..].Min();
+        string Slope(int k) { var now = Ind.Sma(c, k); var prev = c[(n - k - 5)..(n - 5)].Average(); return $"{(now / prev - 1) * 100:+0.0;-0.0}%"; }
+        return $"出来高(日平均,万株) 直近6週: {string.Join("→", weeks)} / 5日÷20日={Avg(5) / Avg(20):F2} 20日÷60日={Avg(20) / Avg(60):F2}\n"
+            + $"直近20日の平均出来高 上昇日÷下落日={(dnV > 0 ? (upV / dnV).ToString("F2") : "下落日なし")}\n"
+            + $"週足終値 直近12週: {string.Join("→", c[^12..].Select(x => x.ToString("#,0.##")))}\n"
+            + $"52週高値{hi:#,0.##}(現在値から{(c[^1] / hi - 1) * 100:+0.0;-0.0}%) 52週安値{lo:#,0.##}(現在値は安値から{(c[^1] / lo - 1) * 100:+0.0;-0.0}%)\n"
+            + $"週足SMA13の5週間の変化{Slope(13)} SMA26の5週間の変化{Slope(26)} 現在値のSMA13比{(c[^1] / Ind.Sma(c, 13) - 1) * 100:+0.0;-0.0}% SMA26比{(c[^1] / Ind.Sma(c, 26) - 1) * 100:+0.0;-0.0}%";
     }
-
     static async Task<Result?> Scan((string code, string name) it, List<string> errs)
     {
         (string Sym, string Name, List<Bar> Rows) f;
@@ -296,7 +319,7 @@ static class Screen
         var last = f.Rows[^1];
         return new(f.Sym, it.name, last.D, last.C,
             js.Where(x => x.j is Hit).ToDictionary(x => x.tf, x => (Hit)x.j!),
-            js.Where(x => x.j is string).ToDictionary(x => x.tf, x => (string)x.j!), VolSummary(f.Rows));
+            js.Where(x => x.j is string).ToDictionary(x => x.tf, x => (string)x.j!), js[1].j is Hit ? Context(f.Rows, w) : ""); // AI用の材料は週足◎のみ(履歴が短い銘柄での範囲外も避ける)
     }
 
     // 数値から組み立てる定型の一言コメント(AIは使わない)
@@ -308,23 +331,30 @@ static class Screen
         return $"{pos}、{room}{heat}";
     }
 
-    static string Markdown(DateOnly last, int scanned, int errors, List<Result> hits, Dictionary<string, (string Score, string Text)> ai)
+    // 表付きの HTML を直接生成する(リンクは新しいタブで開く)
+    static string Html(DateOnly last, int scanned, int errors, List<Result> hits, Dictionary<string, (string Score, string Text)> ai)
     {
-        string[] tfs = ["月足", "週足", "日足"];
-        string Join(Result x, Func<Hit, string> f) => hits.Count == 0 ? "" : string.Join(" / ", x.Hits.Select(kv => (x.Hits.Count > 1 ? kv.Key + ":" : "") + f(kv.Value)));
-        var m = new StringBuilder();
-        m.AppendLine($"# プライム◎スクリーニング ({last:yyyy-MM-dd})\n");
-        m.AppendLine($"- 対象 {scanned} 銘柄 / ◎ **{hits.Count}** 銘柄 / 取得エラー {errors} 件\n");
-        m.AppendLine("## ◎銘柄\n");
-        m.AppendLine("| symbol | 銘柄名 | 終値 | 月足 | 週足 | 日足 | 損切り | 目標(RR) | コメント | AIスコア | AIチェック(週足◎のみ) |");
-        m.AppendLine("|---|---|--:|:-:|:-:|:-:|--:|--:|---|--:|---|");
+        const string css = "body{font-family:'Yu Gothic UI',sans-serif;max-width:1300px;margin:2em auto;padding:0 1em;line-height:1.6}"
+            + "table{border-collapse:collapse}th,td{border:1px solid #ccc;padding:4px 10px}th{background:#f0f0f0;white-space:nowrap}tr:nth-child(even){background:#fafafa}"
+            + ".r{text-align:right}.c{text-align:center}.nw{white-space:nowrap}.score{white-space:nowrap;text-align:center}.score b{font-size:1.3em}small,.note{color:#555}";
+        string E(string s) => WebUtility.HtmlEncode(s);
+        string Join(Result x, Func<Hit, string> f) => string.Join(" / ", x.Hits.Select(kv => (x.Hits.Count > 1 ? kv.Key + ":" : "") + f(kv.Value)));
+        var h = new StringBuilder();
+        h.Append($"<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>プライム◎スクリーニング {last:yyyy-MM-dd}</title><style>{css}</style></head><body>");
+        h.Append($"<h1>プライム◎スクリーニング ({last:yyyy-MM-dd})</h1><p>対象 {scanned} 銘柄 / ◎ <b>{hits.Count}</b> 銘柄 / 取得エラー {errors} 件</p><h2>◎銘柄</h2>");
+        h.Append("<table><tr><th>symbol</th><th>銘柄名</th><th>終値</th><th>月足</th><th>週足</th><th>日足</th><th>損切り</th><th>目標(RR)</th><th>コメント</th><th>AIスコア</th><th>AIチェック(週足◎のみ)</th></tr>");
         foreach (var x in hits)
-            m.AppendLine($"| {x.Sym} | [{x.Name}](https://finance.yahoo.co.jp/quote/{x.Sym}/chart) | {x.Close:#,0.##} | " + string.Join(" | ", tfs.Select(t => x.Hits.ContainsKey(t) ? "◎" : ""))
-                + $" | {Join(x, j => j.Stop.ToString("#,0"))}"
-                + $" | {Join(x, j => j.Target is { } t ? $"{t:#,0.##} ({j.Rr:F1})" : "高値更新中")} | {Join(x, Comment)} | {(ai.TryGetValue(x.Sym, out var a) ? $"{a.Score} | {a.Text}" : " | ")} |");
-        if (hits.Count == 0) m.AppendLine("| ◎なし | | | | | | | | | | |");
-        m.AppendLine("\n---\n損切り=短期線-1ATR、目標=直近60本高値。ファンダ・決算日程は未考慮、投資判断は自己責任。");
-        return m.ToString();
+        {
+            h.Append($"<tr><td>{x.Sym}</td><td class=\"nw\"><a target=\"_blank\" rel=\"noopener\" href=\"https://finance.yahoo.co.jp/quote/{x.Sym}/chart\">{E(x.Name)}</a></td><td class=\"r\">{x.Close:#,0.##}</td>");
+            foreach (var t in new[] { "月足", "週足", "日足" }) h.Append($"<td class=\"c\">{(x.Hits.ContainsKey(t) ? "◎" : "")}</td>");
+            h.Append($"<td class=\"r\">{Join(x, j => j.Stop.ToString("#,0"))}</td><td class=\"r nw\">{Join(x, j => j.Target is { } t ? $"{t:#,0.##} ({j.Rr:F1})" : "高値更新中")}</td><td>{E(Join(x, Comment))}</td>");
+            h.Append(ai.TryGetValue(x.Sym, out var a) ? $"<td class=\"score\">{a.Score}</td><td>{E(a.Text)}</td>" : "<td></td><td></td>");
+            h.Append("</tr>");
+        }
+        if (hits.Count == 0) h.Append("<tr><td colspan=\"11\">◎なし</td></tr>");
+        h.Append("</table><p class=\"note\">AIスコア内訳(100点満点): 押=押し目の質(25) 余=上値余地(25) 出=出来高の傾向(25) 熱=過熱感の無さ(15) 勢=トレンドの強さ(10)</p>");
+        h.Append("<hr><p class=\"note\">損切り=短期線-1ATR、目標=直近60本高値。ファンダ・決算日程は未考慮、投資判断は自己責任。</p></body></html>");
+        return h.ToString();
     }
 
     static void Bar(int done, int total)
@@ -333,16 +363,20 @@ static class Screen
         Console.Error.Write($"\r[{new string('#', n)}{new string('-', w - n)}] {done}/{total} ({done * 100 / total}%)");
     }
 
-    // md と同じ場所に表付きの見やすい HTML を作り、既定ブラウザで開く
-    static void OpenHtml(string mdPath, string md)
+    // 既定ブラウザを調べて --new-window で開く(既存ウインドウのタブにしない)。判別できなければ通常オープン
+    static void OpenInNewWindow(string path)
     {
-        const string css = "body{font-family:'Yu Gothic UI',sans-serif;max-width:1200px;margin:2em auto;padding:0 1em;line-height:1.6}"
-            + "table{border-collapse:collapse}th,td{border:1px solid #ccc;padding:4px 10px}th{background:#f0f0f0}tr:nth-child(even){background:#fafafa}";
-        var body = Markdig.Markdown.ToHtml(md, new Markdig.MarkdownPipelineBuilder().UseAdvancedExtensions().Build())
-            .Replace("<a href=", "<a target=\"_blank\" rel=\"noopener\" href="); // リンクは新しいタブで開く
-        var html = Path.ChangeExtension(Path.GetFullPath(mdPath), ".html");
-        File.WriteAllText(html, $"<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>{Path.GetFileNameWithoutExtension(mdPath)}</title><style>{css}</style></head><body>{body}</body></html>", new UTF8Encoding(false));
-        System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(html) { UseShellExecute = true });
+        try
+        {
+            var prog = Microsoft.Win32.Registry.GetValue(@"HKEY_CURRENT_USER\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\https\UserChoice", "ProgId", null) as string;
+            var cmd = Microsoft.Win32.Registry.GetValue($@"HKEY_CLASSES_ROOT\{prog}\shell\open\command", "", null) as string;
+            var exe = System.Text.RegularExpressions.Regex.Match(cmd ?? "", "\"([^\"]+)\"").Groups[1].Value;
+            var name = Path.GetFileNameWithoutExtension(exe).ToLowerInvariant();
+            var flag = name is "chrome" or "msedge" or "brave" or "vivaldi" or "opera" ? "--new-window" : name == "firefox" ? "-new-window" : null;
+            if (flag != null && File.Exists(exe)) { System.Diagnostics.Process.Start(exe, $"{flag} \"{new Uri(path).AbsoluteUri}\""); return; }
+        }
+        catch { } // shortcut: 上記以外のブラウザ(Arc等)は通常オープン(既存ウインドウのタブになる)
+        System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(path) { UseShellExecute = true });
     }
 
     public static async Task<int> Run(int? limit)
@@ -363,13 +397,12 @@ static class Screen
         var last = ok.Max(x => x.Last);
 
         var dir = Path.Combine("analysis", last.ToString("yyyyMMdd")); Directory.CreateDirectory(dir);
-        var path = Path.Combine(dir, "prime_hanamaru.md");
-        var md = Markdown(last, list.Count, errs.Count, hits, await Ai.Check(hits));
-        File.WriteAllText(path, md, new UTF8Encoding(false));
+        var path = Path.GetFullPath(Path.Combine(dir, "prime_hanamaru.html"));
+        File.WriteAllText(path, Html(last, list.Count, errs.Count, hits, await Ai.Check(hits)), new UTF8Encoding(false));
         Console.WriteLine($"完了: ◎{hits.Count}銘柄 / エラー{errs.Count}件");
         foreach (var e in errs.Take(5)) Console.Error.WriteLine("ERR " + e);
         Console.WriteLine("保存先: " + path);
-        OpenHtml(path, md);
+        OpenInNewWindow(path);
         return 0;
     }
 }
