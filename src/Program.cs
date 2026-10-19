@@ -172,7 +172,7 @@ static class Ta
 // 週足が◎の銘柄だけ、Claude API で判定の妥当性を一言チェックする(ANTHROPIC_API_KEY 未設定なら何もしない)
 static class Ai
 {
-    const string Model = "claude-sonnet-5-5";
+    const string Model = "claude-opus-5-5";
     const string System = """
         あなたは投資初心者に株を説明する案内役。機械判定で週足◎(上昇トレンド・MACDゴールデンクロス直後は判定済みで確認不要)となった銘柄を、渡された数値だけから、今エントリーする魅力で採点する。ファンダは考慮しない。
         採点は下の配点表で項目ごとに整数で行い、基準に沿って厳しめにつけ、銘柄ごとの違いをはっきり出す(◎を通った銘柄の平均が50点前後になるイメージ。満点級は滅多に出さない)。
@@ -396,8 +396,8 @@ static class Screen
         if (ok.Count == 0) { Console.Error.WriteLine($"全件取得失敗(例: {errs.FirstOrDefault()})。レート制限の可能性があるので時間をおいて再実行してください"); return 1; }
         var last = ok.Max(x => x.Last);
 
-        var dir = Path.Combine("analysis", last.ToString("yyyyMMdd")); Directory.CreateDirectory(dir);
-        var path = Path.GetFullPath(Path.Combine(dir, "prime_hanamaru.html"));
+        var dir = Path.Combine(AppContext.BaseDirectory, "analysis"); Directory.CreateDirectory(dir); // exe と同じフォルダ配下
+        var path = Path.Combine(dir, $"{last:yyyy-MM-dd}.html");
         File.WriteAllText(path, Html(last, list.Count, errs.Count, hits, await Ai.Check(hits)), new UTF8Encoding(false));
         Console.WriteLine($"完了: ◎{hits.Count}銘柄 / エラー{errs.Count}件");
         foreach (var e in errs.Take(5)) Console.Error.WriteLine("ERR " + e);
