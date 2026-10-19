@@ -177,10 +177,10 @@ static class Ai
         あなたは投資初心者に株を説明する案内役。機械判定で週足◎(上昇トレンド・MACDゴールデンクロス直後は判定済みで確認不要)となった銘柄を、渡された数値だけから、今エントリーする魅力で採点する。ファンダは考慮しない。
         採点は下の配点表で項目ごとに整数で行い、基準に沿って厳しめにつけ、銘柄ごとの違いをはっきり出す(◎を通った銘柄の平均が50点前後になるイメージ。満点級は滅多に出さない)。
         - pullback(押し目の質, 0〜25): 短期線との距離が0〜0.3ATRで20〜25、0.3〜1ATRで12〜19、1〜2ATRで5〜11。直近週足の終値が一直線に上がっていれば減点、押して反発した形なら加点。
-        - upside(上値余地, 0〜25): RR3以上、または高値更新中で52週高値より上なら20〜25、RR2〜3で13〜19、RR1.5〜2で5〜12。52週高値までの距離が近いほど減点。
-        - volume(出来高の傾向, 0〜25): 直近の出来高が増加傾向(5日÷20日が1.1超)かつ上昇日の出来高が下落日より多いなら18〜25、横ばいなら9〜17、細っている(5日÷20日が0.8未満など)なら0〜8。
-        - heat(過熱感の無さ, 0〜15): RSIとStochが低いほど高得点。RSI60超またはStoch70超は0〜6、50前後は7〜11、45以下は12〜15。
-        - trend(トレンドの強さ, 0〜10): 移動平均の傾き(5週間の変化)が大きく、現在値が平均線の上にあり、他の時間軸も◎なら高得点。傾きが弱い・横ばいなら低得点。
+        - upside(上値余地, 0〜20): RR3以上、または高値更新中なら16〜20、RR2〜3で10〜15、RR1.5〜2で4〜9。52週高値の近く(5%以内)にいることは減点しない(高値圏の銘柄は続伸しやすい)。
+        - volume(出来高の傾向, 0〜20): 直近の出来高が増加傾向(5日÷20日が1.1超)かつ上昇日の出来高が下落日より多いなら15〜20、横ばいなら7〜14、細っている(5日÷20日が0.8未満など)なら0〜6。
+        - heat(過熱感の無さ, 0〜15): RSIとStochが低いほど高得点。上昇トレンド中はRSI50〜65が普通なので、RSI70超またはStoch85超は0〜5、RSI60〜70は6〜10、RSI60未満は11〜15。
+        - trend(トレンドの強さ, 0〜20): 移動平均の傾き(5週間の変化)が大きく、現在値が平均線の上にあり、他の時間軸も◎なら15〜20、傾きが普通なら8〜14、弱い・横ばいなら0〜7。
         comment は、初心者向けに2文・合計100字程度で、結論(買ってよさそう/様子見/見送り寄り)→理由・注意点の順。RSI・Stoch・ATR・RRなどの専門用語は『買われすぎの度合い』『平均より上がりすぎていないか』『損失に対する利益の見込み』『取引量』のようにやさしい言葉に言い換える。装飾記号は使わない。
         出力は次のJSONのみ(前後に文章やコードブロックを付けない): {"pullback":整数,"upside":整数,"volume":整数,"heat":整数,"trend":整数,"comment":"..."}
         """;
@@ -215,7 +215,7 @@ static class Ai
         if (a < 0 || b < a) throw new FormatException("JSONなし");
         using var d = JsonDocument.Parse(s[a..(b + 1)]);
         // 項目ごとの点数を上限で切って合計する(AIの足し算ミスや配点超過を防ぐ)
-        (string Key, string Label, int Max)[] items = [("pullback", "押", 25), ("upside", "余", 25), ("volume", "出", 25), ("heat", "熱", 15), ("trend", "勢", 10)];
+        (string Key, string Label, int Max)[] items = [("pullback", "押", 25), ("upside", "余", 20), ("volume", "出", 20), ("heat", "熱", 15), ("trend", "勢", 20)];
         var pts = items.Select(i => d.RootElement.TryGetProperty(i.Key, out var p) && p.TryGetInt32(out var n) ? Math.Clamp(n, 0, i.Max) : throw new FormatException(i.Key + "なし")).ToArray();
         var detail = string.Join(" ", items.Zip(pts, (i, p) => $"{i.Label}{p}"));
         return ($"<b>{pts.Sum()}</b><br><small>{detail}</small>", d.RootElement.TryGetProperty("comment", out var c) ? c.GetString() ?? "" : "");
@@ -353,7 +353,7 @@ static class Screen
             h.Append("</tr>");
         }
         if (hits.Count == 0) h.Append("<tr><td colspan=\"11\">◎なし</td></tr>");
-        h.Append($"</table><p class=\"note\">AIスコア内訳(100点満点): 押=押し目の質(25) 余=上値余地(25) 出=出来高の傾向(25) 熱=過熱感の無さ(15) 勢=トレンドの強さ(10)<br>AIモデル: {Ai.Model}</p>");
+        h.Append($"</table><p class=\"note\">AIスコア内訳(100点満点): 押=押し目の質(25) 余=上値余地(20) 出=出来高の傾向(20) 熱=過熱感の無さ(15) 勢=トレンドの強さ(20)<br>AIモデル: {Ai.Model}</p>");
         h.Append("<hr><p class=\"note\">損切り=短期線-1ATR、目標=直近60本高値。ファンダ・決算日程は未考慮、投資判断は自己責任。</p></body></html>");
         return h.ToString();
     }
