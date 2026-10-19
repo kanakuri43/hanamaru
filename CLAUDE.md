@@ -15,17 +15,17 @@ hanamaru/
 │  ├─ bin/Release/      ビルド出力(git管理外)
 │  └─ obj/              中間ファイル(git管理外)
 └─ analysis/<日付>/     taの実行結果(git管理外)。カレントディレクトリ直下に作られる
-   (screenのHTMLは stocks.exe と同じフォルダの analysis/yyyy-MM-dd.html)
+   (screenのHTMLは hanamaru.exe と同じフォルダの analysis/yyyy-MM-dd.html)
 ```
 
 ## ビルド環境
 
 - .NET SDK 10.0(`net10.0`、`win-x64`、Windows 専用)
-- 単一ファイル・自己完結(`PublishSingleFile` / `SelfContained`)、出力名 `stocks.exe`
+- 単一ファイル・自己完結(`PublishSingleFile` / `SelfContained`)、出力名 `hanamaru.exe`
 - ビルド: `cd src && dotnet publish -c Release`
-- 出力先: `src/bin/Release/net10.0/win-x64/publish/stocks.exe`
+- 出力先: `src/bin/Release/net10.0/win-x64/publish/hanamaru.exe`
 - 警告 CA1416(`Registry.GetValue`)は Windows 専用なので無視してよい
-- テストプロジェクトはない。動作確認は `stocks ta 7203` や `stocks screen 20` で行う
+- テストプロジェクトはない。動作確認は `hanamaru ta 7203` や `hanamaru screen 20` で行う
 
 ## 実行時の注意
 

@@ -1,6 +1,6 @@
 ﻿// tech-analysis / prime-hanamaru スキル(ta.py / screen.py)の C# 移植
-//   stocks ta <コード>...   指標を出力し analysis/<日付>/<symbol>_<名前>.md に保存
-//   stocks screen [上限]    プライム全銘柄を◎判定し analysis/<日付>/prime_hanamaru.md に保存
+//   hanamaru ta <コード>...   指標を出力し analysis/<日付>/<symbol>_<名前>.md に保存
+//   hanamaru screen [上限]    プライム全銘柄を◎判定し analysis/<日付>/prime_hanamaru.md に保存
 using System.Globalization;
 using System.Net;
 using System.Text;
@@ -14,7 +14,7 @@ Console.OutputEncoding = new UTF8Encoding(false);
 if (args.Length == 0) args = ["screen"]; // 省略時は screen
 if (args[0] is not ("ta" or "screen"))
 {
-    Console.WriteLine("usage: stocks ta <code>...  |  stocks screen [limit]");
+    Console.WriteLine("usage: hanamaru ta <code>...  |  hanamaru screen [limit]");
     return 1;
 }
 return args[0] == "ta" ? await Ta.Run(args[1..]) : await Screen.Run(args.Length > 1 ? int.Parse(args[1]) : null);
@@ -172,7 +172,7 @@ static class Ta
 // 週足が◎の銘柄だけ、Claude API で判定の妥当性を一言チェックする(ANTHROPIC_API_KEY 未設定なら何もしない)
 static class Ai
 {
-    const string Model = "claude-opus-5-5";
+    public const string Model ="claude-opus-5-5";
     const string System = """
         あなたは投資初心者に株を説明する案内役。機械判定で週足◎(上昇トレンド・MACDゴールデンクロス直後は判定済みで確認不要)となった銘柄を、渡された数値だけから、今エントリーする魅力で採点する。ファンダは考慮しない。
         採点は下の配点表で項目ごとに整数で行い、基準に沿って厳しめにつけ、銘柄ごとの違いをはっきり出す(◎を通った銘柄の平均が50点前後になるイメージ。満点級は滅多に出さない)。
@@ -352,7 +352,7 @@ static class Screen
             h.Append("</tr>");
         }
         if (hits.Count == 0) h.Append("<tr><td colspan=\"11\">◎なし</td></tr>");
-        h.Append("</table><p class=\"note\">AIスコア内訳(100点満点): 押=押し目の質(25) 余=上値余地(25) 出=出来高の傾向(25) 熱=過熱感の無さ(15) 勢=トレンドの強さ(10)</p>");
+        h.Append($"</table><p class=\"note\">AIスコア内訳(100点満点): 押=押し目の質(25) 余=上値余地(25) 出=出来高の傾向(25) 熱=過熱感の無さ(15) 勢=トレンドの強さ(10)<br>AIモデル: {Ai.Model}</p>");
         h.Append("<hr><p class=\"note\">損切り=短期線-1ATR、目標=直近60本高値。ファンダ・決算日程は未考慮、投資判断は自己責任。</p></body></html>");
         return h.ToString();
     }

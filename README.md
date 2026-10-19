@@ -1,13 +1,13 @@
-# stocks 取扱説明書
+# hanamaru 取扱説明書
 
 日本株のテクニカル分析ツール。データは Yahoo Finance(日足5年分)から取得。
 
 ## 使い方
 
 ```
-stocks ta <コード>...     個別銘柄の指標を表示し analysis/<日付>/<symbol>_<名前>.md に保存
-stocks screen [上限]      プライム全銘柄を◎判定し <exeのフォルダ>/analysis/yyyy-MM-dd.html に保存してブラウザで開く
-stocks                    引数なしは screen と同じ
+hanamaru ta <コード>...     個別銘柄の指標を表示し analysis/<日付>/<symbol>_<名前>.md に保存
+hanamaru screen [上限]      プライム全銘柄を◎判定し <exeのフォルダ>/analysis/yyyy-MM-dd.html に保存してブラウザで開く
+hanamaru                    引数なしは screen と同じ
 ```
 
 - コードは `7203` のように数字だけでOK(自動で `.T` が付く)。
