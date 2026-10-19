@@ -334,9 +334,10 @@ static class Screen
     // 表付きの HTML を直接生成する(リンクは新しいタブで開く)
     static string Html(DateOnly last, int scanned, int errors, List<Result> hits, Dictionary<string, (string Score, string Text)> ai)
     {
-        const string css = "body{font-family:'Yu Gothic UI',sans-serif;max-width:1300px;margin:2em auto;padding:0 1em;line-height:1.6}"
-            + "table{border-collapse:collapse}th,td{border:1px solid #ccc;padding:4px 10px}th{background:#f0f0f0;white-space:nowrap}tr:nth-child(even){background:#fafafa}"
-            + ".r{text-align:right}.c{text-align:center}.nw{white-space:nowrap}.score{white-space:nowrap;text-align:center}.score b{font-size:1.3em}small,.note{color:#555}";
+        const string css = "body{font-family:'Yu Gothic UI',sans-serif;max-width:1500px;margin:2em auto;padding:0 1em;line-height:1.6;font-size:14px;color:#222}"
+            + "table{border-collapse:collapse;width:100%}th,td{border:1px solid #ddd;padding:6px 10px;vertical-align:top}th{background:#eef1f5;white-space:nowrap;position:sticky;top:0}"
+            + "tr:nth-child(even){background:#fafafa}tbody tr:hover,tr:hover{background:#fff8dc}"
+            + ".r{text-align:right}.c{text-align:center;color:#c0392b;font-weight:bold}.nw{white-space:nowrap}.score{white-space:nowrap;text-align:center}.score b{font-size:1.3em}small,.note{color:#555}";
         string E(string s) => WebUtility.HtmlEncode(s);
         string Join(Result x, Func<Hit, string> f) => string.Join(" / ", x.Hits.Select(kv => (x.Hits.Count > 1 ? kv.Key + ":" : "") + f(kv.Value)));
         var h = new StringBuilder();
