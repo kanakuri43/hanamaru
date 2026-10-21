@@ -174,13 +174,13 @@ static class Ai
 {
     public const string Model ="claude-opus-5-5";
     const string System = """
-        あなたは投資初心者に株を説明する案内役。機械判定で週足◎(上昇トレンド・MACDゴールデンクロス直後は判定済みで確認不要)となった銘柄を、渡された数値だけから、今エントリーする魅力で採点する。ファンダは考慮しない。
+        あなたは投資初心者に株を説明する案内役。機械判定で週足または日足が◎(上昇トレンド・MACDゴールデンクロス直後は判定済みで確認不要)となった銘柄を、渡された数値だけから、今エントリーする魅力で採点する。ファンダは考慮しない。
         採点は下の配点表で項目ごとに整数で行い、基準に沿って厳しめにつけ、銘柄ごとの違いをはっきり出す(◎を通った銘柄の平均が50点前後になるイメージ。満点級は滅多に出さない)。
-        - pullback(押し目の質, 0〜25): 短期線との距離が0〜0.3ATRで20〜25、0.3〜1ATRで12〜19、1〜2ATRで5〜11。直近週足の終値が一直線に上がっていれば減点、押して反発した形なら加点。
-        - upside(上値余地, 0〜20): RR3以上、または高値更新中なら16〜20、RR2〜3で10〜15、RR1.5〜2で4〜9。52週高値の近く(5%以内)にいることは減点しない(高値圏の銘柄は続伸しやすい)。
+        - pullback(押し目の質, 0〜25): 短期線との距離が0〜0.3ATRで20〜25、0.3〜1ATRで12〜19、1〜2ATRで5〜11。直近の終値が一直線に上がっていれば減点、押して反発した形なら加点。
+        - upside(上値余地, 0〜20): RR3以上、または高値更新中なら16〜20、RR2〜3で10〜15、RR1.5〜2で4〜9。1年高値の近く(5%以内)にいることは減点しない(高値圏の銘柄は続伸しやすい)。
         - volume(出来高の傾向, 0〜20): 直近の出来高が増加傾向(5日÷20日が1.1超)かつ上昇日の出来高が下落日より多いなら15〜20、横ばいなら7〜14、細っている(5日÷20日が0.8未満など)なら0〜6。
         - heat(過熱感の無さ, 0〜15): RSIとStochが低いほど高得点。上昇トレンド中はRSI50〜65が普通なので、RSI70超またはStoch85超は0〜5、RSI60〜70は6〜10、RSI60未満は11〜15。
-        - trend(トレンドの強さ, 0〜20): 移動平均の傾き(5週間の変化)が大きく、現在値が平均線の上にあり、他の時間軸も◎なら15〜20、傾きが普通なら8〜14、弱い・横ばいなら0〜7。
+        - trend(トレンドの強さ, 0〜20): 移動平均の傾き(5本の変化)が大きく、現在値が平均線の上にあり、他の時間軸も◎なら15〜20、傾きが普通なら8〜14、弱い・横ばいなら0〜7。
         comment は、初心者向けに2文・合計100字程度で、結論(買ってよさそう/様子見/見送り寄り)→理由・注意点の順。RSI・Stoch・ATR・RRなどの専門用語は『買われすぎの度合い』『平均より上がりすぎていないか』『損失に対する利益の見込み』『取引量』のようにやさしい言葉に言い換える。装飾記号は使わない。
         出力は次のJSONのみ(前後に文章やコードブロックを付けない): {"pullback":整数,"upside":整数,"volume":整数,"heat":整数,"trend":整数,"comment":"..."}
         """;
@@ -188,7 +188,7 @@ static class Ai
 
     public static async Task<Dictionary<string, (string Score, string Text)>> Check(List<Screen.Result> hits)
     {
-        var targets = hits.Where(x => x.Hits.ContainsKey("週足")).ToList();
+        var targets = hits.Where(x => x.Hits.ContainsKey("週足") || x.Hits.ContainsKey("日足")).ToList();
         var res = new Dictionary<string, (string Score, string Text)>();
         var key = Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY");
         if (targets.Count == 0) return res;
@@ -223,10 +223,10 @@ static class Ai
 
     static async Task<string> Ask(string key, Screen.Result x)
     {
-        var w = x.Hits["週足"];
-        var prompt = $"{x.Sym} {x.Name} 終値{x.Close:#,0.##}\n週足: RSI{w.Rsi:F0} Stoch{w.Stoch:F0} 短期線乖離{w.AtrDist:+0.0;-0.0}ATR 損切り{w.Stop:#,0.##} "
+        var tf = x.Hits.ContainsKey("週足") ? "週足" : "日足"; var w = x.Hits[tf]; // 週足優先、なければ日足の数値を渡す
+        var prompt = $"{x.Sym} {x.Name} 終値{x.Close:#,0.##}\n{tf}: RSI{w.Rsi:F0} Stoch{w.Stoch:F0} 短期線乖離{w.AtrDist:+0.0;-0.0}ATR 損切り{w.Stop:#,0.##} "
             + (w.Target is { } t ? $"目標{t:#,0.##} RR{w.Rr:F1}" : "高値更新中(上値抵抗なし)")
-            + $"\n{x.Ctx}\n他に◎の時間軸: {string.Join(",", x.Hits.Keys.Where(k => k != "週足").DefaultIfEmpty("なし"))}";
+            + $"\n{x.Ctx}\n他に◎の時間軸: {string.Join(",", x.Hits.Keys.Where(k => k != tf).DefaultIfEmpty("なし"))}";
         var body = JsonSerializer.Serialize(new { model = Model, max_tokens = 1500, system = System, messages = new[] { new { role = "user", content = prompt } } });
         using var req = new HttpRequestMessage(HttpMethod.Post, "https://api.anthropic.com/v1/messages") { Content = new StringContent(body, Encoding.UTF8, "application/json") };
         req.Headers.Add("x-api-key", key); req.Headers.Add("anthropic-version", "2023-06-01");
@@ -284,8 +284,8 @@ static class Screen
         return new Hit(r, st, d, stop, up ? null : res, up ? null : rr);
     }
 
-    // AIチェック用の判断材料(出来高の推移・上昇日/下落日の出来高・週足の推移・52週高値までの距離・移動平均の傾き)
-    static string Context(List<Bar> rows, Series w)
+    // AIチェック用の判断材料(出来高の推移・上昇日/下落日の出来高・終値の推移・1年高値までの距離・移動平均の傾き)
+    static string Context(List<Bar> rows, Series w, string tf, int sh, int md)
     {
         var v = rows.Select(r => r.V).ToArray();
         double Avg(int n) => Math.Max(v[^n..].Average(), 1);
@@ -296,13 +296,13 @@ static class Screen
         var upV = Mean(last20.Where(i => rows[i].C > rows[i - 1].C).Select(i => rows[i].V));
         var dnV = Mean(last20.Where(i => rows[i].C < rows[i - 1].C).Select(i => rows[i].V));
         var c = w.C; int n = c.Length;
-        double hi = w.H[^52..].Max(), lo = w.L[^52..].Min();
+        int yr = Math.Min(tf == "週足" ? 52 : 250, n); double hi = w.H[^yr..].Max(), lo = w.L[^yr..].Min(); // 約1年
         string Slope(int k) { var now = Ind.Sma(c, k); var prev = c[(n - k - 5)..(n - 5)].Average(); return $"{(now / prev - 1) * 100:+0.0;-0.0}%"; }
         return $"出来高(日平均,万株) 直近6週: {string.Join("→", weeks)} / 5日÷20日={Avg(5) / Avg(20):F2} 20日÷60日={Avg(20) / Avg(60):F2}\n"
             + $"直近20日の平均出来高 上昇日÷下落日={(dnV > 0 ? (upV / dnV).ToString("F2") : "下落日なし")}\n"
-            + $"週足終値 直近12週: {string.Join("→", c[^12..].Select(x => x.ToString("#,0.##")))}\n"
-            + $"52週高値{hi:#,0.##}(現在値から{(c[^1] / hi - 1) * 100:+0.0;-0.0}%) 52週安値{lo:#,0.##}(現在値は安値から{(c[^1] / lo - 1) * 100:+0.0;-0.0}%)\n"
-            + $"週足SMA13の5週間の変化{Slope(13)} SMA26の5週間の変化{Slope(26)} 現在値のSMA13比{(c[^1] / Ind.Sma(c, 13) - 1) * 100:+0.0;-0.0}% SMA26比{(c[^1] / Ind.Sma(c, 26) - 1) * 100:+0.0;-0.0}%";
+            + $"{tf}終値 直近12本: {string.Join("→", c[^12..].Select(x => x.ToString("#,0.##")))}\n"
+            + $"1年高値{hi:#,0.##}(現在値から{(c[^1] / hi - 1) * 100:+0.0;-0.0}%) 1年安値{lo:#,0.##}(現在値は安値から{(c[^1] / lo - 1) * 100:+0.0;-0.0}%)\n"
+            + $"{tf}SMA{sh}の5本の変化{Slope(sh)} SMA{md}の5本の変化{Slope(md)} 現在値のSMA{sh}比{(c[^1] / Ind.Sma(c, sh) - 1) * 100:+0.0;-0.0}% SMA{md}比{(c[^1] / Ind.Sma(c, md) - 1) * 100:+0.0;-0.0}%";
     }
     static async Task<Result?> Scan((string code, string name) it, List<string> errs)
     {
@@ -319,7 +319,7 @@ static class Screen
         var last = f.Rows[^1];
         return new(f.Sym, it.name, last.D, last.C,
             js.Where(x => x.j is Hit).ToDictionary(x => x.tf, x => (Hit)x.j!),
-            js.Where(x => x.j is string).ToDictionary(x => x.tf, x => (string)x.j!), js[1].j is Hit ? Context(f.Rows, w) : ""); // AI用の材料は週足◎のみ(履歴が短い銘柄での範囲外も避ける)
+            js.Where(x => x.j is string).ToDictionary(x => x.tf, x => (string)x.j!), js[1].j is Hit ? Context(f.Rows, w, "週足", 13, 26) : js[0].j is Hit ? Context(f.Rows, d, "日足", 25, 75) : ""); // AI用の材料は週足/日足◎のみ(履歴が短い銘柄での範囲外も避ける)
     }
 
     // 数値から組み立てる定型の一言コメント(AIは使わない)
@@ -343,8 +343,10 @@ static class Screen
         var h = new StringBuilder();
         h.Append($"<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>プライム◎スクリーニング {last:yyyy-MM-dd}</title><style>{css}</style></head><body>");
         h.Append($"<h1>プライム◎スクリーニング ({last:yyyy-MM-dd})</h1><p>対象 {scanned} 銘柄 / ◎ <b>{hits.Count}</b> 銘柄 / 取得エラー {errors} 件</p><h2>◎銘柄</h2>");
-        h.Append("<table><tr><th>symbol</th><th>銘柄名</th><th>終値</th><th>月足</th><th>週足</th><th>日足</th><th>損切り</th><th>目標(RR)</th><th>コメント</th><th>AIスコア</th><th>AIチェック(週足◎のみ)</th></tr>");
-        foreach (var x in hits)
+        h.Append("<table><tr><th>symbol</th><th>銘柄名</th><th>終値</th><th>月足</th><th>週足</th><th>日足</th><th>損切り</th><th>目標(RR)</th><th>コメント</th><th>AIスコア</th><th>AIチェック(週足・日足◎)</th></tr>");
+        // AIスコア(Score は "<b>合計</b>..." 形式)の高い順。スコアなしは末尾、同点は元の順
+        int Pts(Result x) => ai.TryGetValue(x.Sym, out var a) && int.TryParse(a.Score.Split("<b>")[^1].Split("</b>")[0], out var p) ? p : -1;
+        foreach (var x in hits.OrderByDescending(Pts))
         {
             h.Append($"<tr><td>{x.Sym}</td><td class=\"nw\"><a target=\"_blank\" rel=\"noopener\" href=\"https://finance.yahoo.co.jp/quote/{x.Sym}/chart\">{E(x.Name)}</a></td><td class=\"r\">{x.Close:#,0.##}</td>");
             foreach (var t in new[] { "月足", "週足", "日足" }) h.Append($"<td class=\"c\">{(x.Hits.ContainsKey(t) ? "◎" : "")}</td>");
