@@ -32,3 +32,5 @@ hanamaru/
 - `ANTHROPIC_API_KEY` があるとスクリーニングの週足・日足◎銘柄をAIが採点(モデルは `Program.cs` の `Ai.Model`、現在 `claude-opus-5-5`)
 - `STOCKS_PAR` で同時取得数を変更(既定24)
 - 指標・判定・AIの仕様を変えたら `README.md` も更新する
+- コミットメッセージ・返答は日本語で書く
+- `POSITIONS_URL` / `POSITIONS_WRITE_URL`(ポジションシートの損切チェック `stops`)は Apps Script 方式。Sheets API(サービスアカウント)には切り替えない方針
