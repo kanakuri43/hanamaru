@@ -7,6 +7,7 @@
 ```
 hanamaru ta <コード>...     個別銘柄の指標を表示し analysis/<日付>/<symbol>_<名前>.md に保存
 hanamaru screen [上限]      プライム全銘柄を◎判定し <exeのフォルダ>/analysis/yyyy-MM-dd.html に保存してブラウザで開く
+hanamaru stops              ポジション記録シートを読み、損切ラインが近い(または割れた)保有銘柄を表示
 hanamaru                    引数なしは screen と同じ
 ```
 
@@ -16,6 +17,20 @@ hanamaru                    引数なしは screen と同じ
 - 環境変数
   - `ANTHROPIC_API_KEY` … 設定するとスクリーニングで週足・日足◎の銘柄をAIが採点(週足優先)(未設定なら自動スキップ)
   - `STOCKS_PAR` … 同時取得数(既定24)。エラーが多いときは下げる
+  - `POSITIONS_URL` … `stops` で読むGoogleスプレッドシートのCSV出力URL(`https://docs.google.com/spreadsheets/d/<ID>/export?format=csv&gid=<gid>`)。シートは「リンクを知っている全員が閲覧可」にする
+  - `STOP_NEAR` … 損切ラインまでの余裕が現在値の何%以内で警告するか(既定3)
+  - `POSITIONS_WRITE_URL` … 設定すると `stops` の結果をシートのM列(3行目〜)に書き込む。シートの「拡張機能 → Apps Script」に下のコードを貼り、「デプロイ → ウェブアプリ(実行: 自分 / アクセス: 全員)」のURLを設定する
+    ```js
+    function doPost(e) {
+      var v = JSON.parse(e.postData.contents);
+      var s = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("positions");
+      s.getRange(3, 13, Math.max(s.getLastRow() - 2, v.length), 1).clearContent();
+      s.getRange(3, 13, v.length, 1).setValues(v.map(function (x) { return [x]; }));
+      return ContentService.createTextOutput("ok");
+    }
+    ```
+- `POSITIONS_URL` が設定されていれば、`screen`(引数なし実行)の最後にも `stops` のチェックを行う。
+- `stops` は exit-date が空の行を保有中とみなす。列は A=code, G=stop-loss, I=exit-date を前提(1行目は集計、2行目は見出し)。
 
 ## 時間軸
 

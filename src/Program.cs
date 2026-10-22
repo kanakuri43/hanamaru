@@ -12,12 +12,17 @@ CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
 Console.OutputEncoding = new UTF8Encoding(false);
 
 if (args.Length == 0) args = ["screen"]; // 省略時は screen
-if (args[0] is not ("ta" or "screen"))
+if (args[0] is not ("ta" or "screen" or "stops"))
 {
-    Console.WriteLine("usage: hanamaru ta <code>...  |  hanamaru screen [limit]");
+    Console.WriteLine("usage: hanamaru ta <code>...  |  hanamaru screen [limit]  |  hanamaru stops");
     return 1;
 }
-return args[0] == "ta" ? await Ta.Run(args[1..]) : await Screen.Run(args.Length > 1 ? int.Parse(args[1]) : null);
+return args[0] switch
+{
+    "ta" => await Ta.Run(args[1..]),
+    "stops" => await Positions.Run(),
+    _ => await Screen.Run(args.Length > 1 ? int.Parse(args[1]) : null),
+};
 
 record Bar(DateOnly D, double H, double L, double C, double V);
 
@@ -166,6 +171,71 @@ static class Ta
             catch (Exception e) { Console.Error.WriteLine($"ERR {code}: {e.Message}"); rc = 1; }
         }
         return rc;
+    }
+}
+
+// ポジション記録(Googleスプレッドシート)を読み、損切ラインが近い保有銘柄を警告する
+//   POSITIONS_URL: 「リンクを知っている全員が閲覧可」にしたシートのCSV出力URL(.../export?format=csv&gid=...)
+//   STOP_NEAR: 損切ラインまでの余裕が現在値の何%以内で警告するか(既定3)
+static class Positions
+{
+    public static async Task<int> Run()
+    {
+        var url = Environment.GetEnvironmentVariable("POSITIONS_URL");
+        if (string.IsNullOrEmpty(url)) { Console.Error.WriteLine("環境変数 POSITIONS_URL が未設定です"); return 1; }
+        var near = double.Parse(Environment.GetEnvironmentVariable("STOP_NEAR") ?? "3");
+        using var http = new HttpClient();
+        var csv = await http.GetStringAsync(url);
+        int warn = 0, open = 0;
+        var m = new List<string>(); // M列に書く内容。シートの3行目から1行1要素
+        // 1行目は集計、2行目は見出し。列: A=code B=name F=entry-price G=stop-loss I=exit-date
+        foreach (var f in csv.Split('\n').Skip(2).Select(l => Cells(l.TrimEnd('\r'))))
+        {
+            m.Add("");
+            if (f.Count < 9 || !int.TryParse(f[0], out _) || f[8] != "" || !double.TryParse(Num(f[6]), out var stop)) continue;
+            open++;
+            try
+            {
+                var last = (await Yahoo.Fetch(f[0])).Rows[^1].C;
+                var gap = (last - stop) / last * 100;
+                if (gap > near) { m[^1] = $"OK 現在値{last:#,0.##} (損切まであと{gap:F1}%)"; continue; }
+                warn++;
+                m[^1] = gap <= 0 ? $"【損切ライン割れ】現在値{last:#,0.##} ≦ 損切{stop:#,0.##}" : $"【損切が近い】現在値{last:#,0.##} 損切{stop:#,0.##} (あと{gap:F1}%)";
+                Console.WriteLine($"{f[0]} {f[1]} {m[^1]}");
+            }
+            catch (Exception e) { m[^1] = "取得エラー"; Console.Error.WriteLine($"ERR {f[0]}: {e.Message}"); }
+        }
+        Console.WriteLine($"保有{open}件中、警告{warn}件");
+        // POSITIONS_WRITE_URL: Apps Script ウェブアプリのURL。README 参照
+        var wurl = Environment.GetEnvironmentVariable("POSITIONS_WRITE_URL");
+        if (wurl != null)
+        {
+            try
+            {
+                var res = await http.PostAsync(wurl, new StringContent(JsonSerializer.Serialize(m), Encoding.UTF8, "text/plain"));
+                var body = await res.Content.ReadAsStringAsync();
+                Console.WriteLine(body.Trim() == "ok" ? "M列に書き込みました" : $"M列への書き込みに失敗: {body[..Math.Min(body.Length, 200)]}");
+            }
+            catch (Exception e) { Console.Error.WriteLine($"M列への書き込みに失敗: {e.Message}"); }
+        }
+        return 0;
+    }
+
+    static string Num(string s) => new string(s.Where(c => char.IsDigit(c) || c == '.').ToArray());
+
+    // shortcut: セル内改行は未対応(このシートには無い)、必要になったら行分割から見直す
+    static List<string> Cells(string line)
+    {
+        var r = new List<string>(); var sb = new StringBuilder(); bool q = false;
+        for (int i = 0; i < line.Length; i++)
+        {
+            var c = line[i];
+            if (c == '"') { if (q && i + 1 < line.Length && line[i + 1] == '"') { sb.Append('"'); i++; } else q = !q; }
+            else if (c == ',' && !q) { r.Add(sb.ToString()); sb.Clear(); }
+            else sb.Append(c);
+        }
+        r.Add(sb.ToString());
+        return r;
     }
 }
 
@@ -406,6 +476,8 @@ static class Screen
         foreach (var e in errs.Take(5)) Console.Error.WriteLine("ERR " + e);
         Console.WriteLine("保存先: " + path);
         OpenInNewWindow(path);
+        if (Environment.GetEnvironmentVariable("POSITIONS_URL") != null)
+            try { await Positions.Run(); } catch (Exception e) { Console.Error.WriteLine("損切チェック失敗: " + e.Message); } // screen の結果には影響させない
         return 0;
     }
 }
