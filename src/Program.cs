@@ -256,25 +256,39 @@ static class Ai
         """;
     static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(60) };
 
-    public static async Task<Dictionary<string, (string Score, string Text)>> Check(List<Screen.Result> hits)
+    public static Task<Dictionary<string, (string Score, string Text)>> Check(List<Screen.Result> hits)
+    {
+        var key = Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY");
+        return Check(hits, "Claude", string.IsNullOrEmpty(key) ? "ANTHROPIC_API_KEY 未設定" : null, x => Ask(key!, x));
+    }
+
+    // codex CLI が見つかったときだけ実行する
+    public static Task<Dictionary<string, (string Score, string Text)>> CheckCodex(List<Screen.Result> hits)
+    {
+        var exe = Codex.Find();
+        return Check(hits, "Codex", exe == null ? "codex CLI 未検出(HANAMARU_CODEX_PATH で指定可)" : null, x => Codex.Run(exe!, System + "\n\n" + Prompt(x)));
+    }
+
+    static async Task<Dictionary<string, (string Score, string Text)>> Check(List<Screen.Result> hits, string who, string? skip, Func<Screen.Result, Task<string>> ask)
     {
         var targets = hits.Where(x => x.Hits.ContainsKey("週足") || x.Hits.ContainsKey("日足")).ToList();
         var res = new Dictionary<string, (string Score, string Text)>();
-        var key = Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY");
         if (targets.Count == 0) return res;
-        if (string.IsNullOrEmpty(key)) { Console.Error.WriteLine("ANTHROPIC_API_KEY 未設定のためAIチェックをスキップ"); return res; }
-        Console.Error.WriteLine($"AIチェック中 ({targets.Count}銘柄)...");
+        if (skip != null) { Console.Error.WriteLine($"{skip}のため{who}のAIチェックをスキップ"); return res; }
+        Console.Error.WriteLine($"{who} AIチェック中 ({targets.Count}銘柄)...");
+        int done = 0; Screen.Bar(0, targets.Count);
         await Parallel.ForEachAsync(targets, new ParallelOptions { MaxDegreeOfParallelism = 4 }, async (x, _) =>
         {
             (string Score, string Text) r;
             try
             {
-                try { r = Parse(await Ask(key, x)); }
-                catch (Exception e) when (e is JsonException or FormatException) { r = Parse(await Ask(key, x)); } // 稀にJSONが崩れるので1回再試行
+                try { r = Parse(await ask(x)); }
+                catch (Exception e) when (e is JsonException or FormatException) { r = Parse(await ask(x)); } // 稀にJSONが崩れるので1回再試行
             }
             catch (Exception e) { r = ("-", "AIチェック不可: " + e.Message); }
-            lock (res) res[x.Sym] = (r.Score, r.Text.Replace("|", "/").Replace("*", "").ReplaceLineEndings(" ").Trim());
+            lock (res) { res[x.Sym] = (r.Score, r.Text.Replace("|", "/").Replace("*", "").ReplaceLineEndings(" ").Trim()); Screen.Bar(++done, targets.Count); }
         });
+        Console.Error.WriteLine();
         return res;
     }
 
@@ -291,12 +305,17 @@ static class Ai
         return ($"<b>{pts.Sum()}</b><br><small>{detail}</small>", d.RootElement.TryGetProperty("comment", out var c) ? c.GetString() ?? "" : "");
     }
 
-    static async Task<string> Ask(string key, Screen.Result x)
+    static string Prompt(Screen.Result x)
     {
         var tf = x.Hits.ContainsKey("週足") ? "週足" : "日足"; var w = x.Hits[tf]; // 週足優先、なければ日足の数値を渡す
-        var prompt = $"{x.Sym} {x.Name} 終値{x.Close:#,0.##}\n{tf}: RSI{w.Rsi:F0} Stoch{w.Stoch:F0} 短期線乖離{w.AtrDist:+0.0;-0.0}ATR 損切り{w.Stop:#,0.##} "
+        return $"{x.Sym} {x.Name} 終値{x.Close:#,0.##}\n{tf}: RSI{w.Rsi:F0} Stoch{w.Stoch:F0} 短期線乖離{w.AtrDist:+0.0;-0.0}ATR 損切り{w.Stop:#,0.##} "
             + (w.Target is { } t ? $"目標{t:#,0.##} RR{w.Rr:F1}" : "高値更新中(上値抵抗なし)")
             + $"\n{x.Ctx}\n他に◎の時間軸: {string.Join(",", x.Hits.Keys.Where(k => k != tf).DefaultIfEmpty("なし"))}";
+    }
+
+    static async Task<string> Ask(string key, Screen.Result x)
+    {
+        var prompt = Prompt(x);
         var body = JsonSerializer.Serialize(new { model = Model, max_tokens = 1500, system = System, messages = new[] { new { role = "user", content = prompt } } });
         using var req = new HttpRequestMessage(HttpMethod.Post, "https://api.anthropic.com/v1/messages") { Content = new StringContent(body, Encoding.UTF8, "application/json") };
         req.Headers.Add("x-api-key", key); req.Headers.Add("anthropic-version", "2023-06-01");
@@ -306,6 +325,44 @@ static class Ai
         using var doc = JsonDocument.Parse(json);
         // 先頭が thinking ブロックのことがあるので text ブロックを探す
         return string.Concat(doc.RootElement.GetProperty("content").EnumerateArray().Where(b => b.GetProperty("type").GetString() == "text").Select(b => b.GetProperty("text").GetString()));
+    }
+}
+
+// swing-adviser の CodexCliExecutor と同じ呼び方(codex exec を read-only・ephemeral で実行し、最終メッセージを -o のファイルから読む)
+static class Codex
+{
+    public const string Model = "gpt-5.6-sol";
+    public static string? Find()
+    {
+        var env = Environment.GetEnvironmentVariable("HANAMARU_CODEX_PATH");
+        if (!string.IsNullOrWhiteSpace(env)) return File.Exists(env) ? env : null;
+        var npm = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "npm", "node_modules", "@openai", "codex", "node_modules", "@openai", "codex-win32-x64", "vendor", "x86_64-pc-windows-msvc", "bin", "codex.exe");
+        if (File.Exists(npm)) return npm;
+        return (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries)
+            .Select(d => { try { return Path.Combine(d.Trim(), "codex.exe"); } catch { return ""; } })
+            .FirstOrDefault(f => f != "" && !f.Contains("\\WindowsApps\\", StringComparison.OrdinalIgnoreCase) && File.Exists(f));
+    }
+
+    public static async Task<string> Run(string exe, string prompt)
+    {
+        var outFile = Path.Combine(Path.GetTempPath(), $"hanamaru-codex-{Guid.NewGuid():N}.txt");
+        var psi = new System.Diagnostics.ProcessStartInfo(exe) { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true };
+        var home = Environment.GetEnvironmentVariable("HOME") is { Length: > 0 } h ? h : Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        psi.Environment["HOME"] = home;
+        if (Directory.Exists(Path.Combine(home, ".codex"))) psi.Environment["CODEX_HOME"] = Path.Combine(home, ".codex");
+        foreach (var a in new[] { "exec", "--ignore-user-config", "--skip-git-repo-check", "--sandbox", "read-only", "--ephemeral", "-m", Model, "-c", "model_reasoning_effort=medium", "-o", outFile, prompt }) psi.ArgumentList.Add(a);
+        try
+        {
+            using var p = System.Diagnostics.Process.Start(psi)!;
+            var so = p.StandardOutput.ReadToEndAsync(); var se = p.StandardError.ReadToEndAsync();
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(300));
+            try { await p.WaitForExitAsync(cts.Token); }
+            catch (OperationCanceledException) { p.Kill(true); throw new TimeoutException("codexがタイムアウト"); }
+            await Task.WhenAll(so, se);
+            if (p.ExitCode != 0) { var e = (await se).Trim(); throw new Exception($"codex終了コード{p.ExitCode}: {string.Join(" ", e.Split('\n').Where(l => l.Contains("ERROR: ")).DefaultIfEmpty(e[^Math.Min(200, e.Length)..]).Take(1))}"); }
+            return File.Exists(outFile) ? File.ReadAllText(outFile) : await so;
+        }
+        finally { try { File.Delete(outFile); } catch { } }
     }
 }
 
@@ -392,45 +449,36 @@ static class Screen
             js.Where(x => x.j is string).ToDictionary(x => x.tf, x => (string)x.j!), js[1].j is Hit ? Context(f.Rows, w, "週足", 13, 26) : js[0].j is Hit ? Context(f.Rows, d, "日足", 25, 75) : ""); // AI用の材料は週足/日足◎のみ(履歴が短い銘柄での範囲外も避ける)
     }
 
-    // 数値から組み立てる定型の一言コメント(AIは使わない)
-    static string Comment(Hit j)
-    {
-        var pos = j.AtrDist < 0.5 ? "短期線付近の押し目圏" : j.AtrDist < 1.2 ? "短期線から適度な位置" : "やや伸びており追いかけ注意";
-        var room = j.Target is null ? "高値更新中" : j.Rr >= 3 ? $"上値余地大(RR{j.Rr:F1})" : j.Rr >= 2 ? $"上値余地あり(RR{j.Rr:F1})" : $"上値余地は限定的(RR{j.Rr:F1})";
-        var heat = j.Rsi >= 65 || j.Stoch >= 75 ? "、過熱気味" : "";
-        return $"{pos}、{room}{heat}";
-    }
-
     // 表付きの HTML を直接生成する(リンクは新しいタブで開く)
-    static string Html(DateOnly last, int scanned, int errors, List<Result> hits, Dictionary<string, (string Score, string Text)> ai)
+    static string Html(DateOnly last, int scanned, int errors, List<Result> hits, Dictionary<string, (string Score, string Text)> ai, Dictionary<string, (string Score, string Text)> cx)
     {
         const string css = "body{font-family:'Yu Gothic UI',sans-serif;max-width:1500px;margin:2em auto;padding:0 1em;line-height:1.6;font-size:14px;color:#222}"
             + "table{border-collapse:collapse;width:100%}th,td{border:1px solid #ddd;padding:6px 10px;vertical-align:top}th{background:#eef1f5;white-space:nowrap;position:sticky;top:0}"
             + "tr:nth-child(even){background:#fafafa}tbody tr:hover,tr:hover{background:#fff8dc}"
-            + ".r{text-align:right}.c{text-align:center;color:#c0392b;font-weight:bold}.nw{white-space:nowrap}.score{white-space:nowrap;text-align:center}.score b{font-size:1.3em}small,.note{color:#555}";
+            + ".r{text-align:right}.c{text-align:center;color:#c0392b;font-weight:bold}.nw{white-space:nowrap}.score{white-space:nowrap;text-align:center}.score b{font-size:1.3em}.avg{background:#fff1c9}.avg b{font-size:1.9em;color:#c0392b}small,.note{color:#555}";
         string E(string s) => WebUtility.HtmlEncode(s);
         string Join(Result x, Func<Hit, string> f) => string.Join(" / ", x.Hits.Select(kv => (x.Hits.Count > 1 ? kv.Key + ":" : "") + f(kv.Value)));
         var h = new StringBuilder();
         h.Append($"<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>プライム◎スクリーニング {last:yyyy-MM-dd}</title><style>{css}</style></head><body>");
         h.Append($"<h1>プライム◎スクリーニング ({last:yyyy-MM-dd})</h1><p>対象 {scanned} 銘柄 / ◎ <b>{hits.Count}</b> 銘柄 / 取得エラー {errors} 件</p><h2>◎銘柄</h2>");
-        h.Append("<table><tr><th>symbol</th><th>銘柄名</th><th>終値</th><th>月足</th><th>週足</th><th>日足</th><th>損切り</th><th>目標(RR)</th><th>コメント</th><th>AIスコア</th><th>AIチェック(週足・日足◎)</th></tr>");
+        h.Append("<table><tr><th>銘柄名</th><th>終値</th><th>月足</th><th>週足</th><th>日足</th><th>損切り</th><th>平均スコア</th><th>AIスコア</th><th>AIチェック(週足・日足◎)</th><th>Codexスコア</th><th>Codexチェック</th></tr>");
         // AIスコア(Score は "<b>合計</b>..." 形式)の高い順。スコアなしは末尾、同点は元の順
-        int Pts(Result x) => ai.TryGetValue(x.Sym, out var a) && int.TryParse(a.Score.Split("<b>")[^1].Split("</b>")[0], out var p) ? p : -1;
+        double Pts(Result x) => new[] { ai, cx }.Select(d => d.TryGetValue(x.Sym, out var a) && int.TryParse(a.Score.Split("<b>")[^1].Split("</b>")[0], out var p) ? p : (int?)null).Where(p => p != null).Select(p => p!.Value).DefaultIfEmpty(-1).Average();
         foreach (var x in hits.OrderByDescending(Pts))
         {
-            h.Append($"<tr><td>{x.Sym}</td><td class=\"nw\"><a target=\"_blank\" rel=\"noopener\" href=\"https://finance.yahoo.co.jp/quote/{x.Sym}/chart\">{E(x.Name)}</a></td><td class=\"r\">{x.Close:#,0.##}</td>");
+            h.Append($"<tr><td class=\"nw\"><a target=\"_blank\" rel=\"noopener\" href=\"https://finance.yahoo.co.jp/quote/{x.Sym}/chart\">{E(x.Name)}</a><br><small>{x.Sym}</small></td><td class=\"r\">{x.Close:#,0.##}</td>");
             foreach (var t in new[] { "月足", "週足", "日足" }) h.Append($"<td class=\"c\">{(x.Hits.ContainsKey(t) ? "◎" : "")}</td>");
-            h.Append($"<td class=\"r\">{Join(x, j => j.Stop.ToString("#,0"))}</td><td class=\"r nw\">{Join(x, j => j.Target is { } t ? $"{t:#,0.##} ({j.Rr:F1})" : "高値更新中")}</td><td>{E(Join(x, Comment))}</td>");
-            h.Append(ai.TryGetValue(x.Sym, out var a) ? $"<td class=\"score\">{a.Score}</td><td>{E(a.Text)}</td>" : "<td></td><td></td>");
+            h.Append($"<td class=\"r\">{Join(x, j => j.Stop.ToString("#,0"))}</td><td class=\"score avg\">{(Pts(x) >= 0 ? $"<b>{Math.Round(Pts(x), MidpointRounding.AwayFromZero)}</b>" : "")}</td>");
+            foreach (var d in new[] { ai, cx }) h.Append(d.TryGetValue(x.Sym, out var a) ? $"<td class=\"score\">{a.Score}</td><td>{E(a.Text)}</td>" : "<td></td><td></td>");
             h.Append("</tr>");
         }
-        if (hits.Count == 0) h.Append("<tr><td colspan=\"11\">◎なし</td></tr>");
-        h.Append($"</table><p class=\"note\">AIスコア内訳(100点満点): 押=押し目の質(25) 余=上値余地(20) 出=出来高の傾向(20) 熱=過熱感の無さ(15) 勢=トレンドの強さ(20)<br>AIモデル: {Ai.Model}</p>");
+        if (hits.Count == 0) h.Append("<tr><td colspan=\"9\">◎なし</td></tr>");
+        h.Append($"</table><p class=\"note\">AIスコア内訳(100点満点): 押=押し目の質(25) 余=上値余地(20) 出=出来高の傾向(20) 熱=過熱感の無さ(15) 勢=トレンドの強さ(20)<br>AIモデル: {Ai.Model} / Codex: {Codex.Model} (medium)</p>");
         h.Append("<hr><p class=\"note\">損切り=短期線-1ATR、目標=直近60本高値。ファンダ・決算日程は未考慮、投資判断は自己責任。</p></body></html>");
         return h.ToString();
     }
 
-    static void Bar(int done, int total)
+    public static void Bar(int done, int total)
     {
         const int w = 40; int n = done * w / total;
         Console.Error.Write($"\r[{new string('#', n)}{new string('-', w - n)}] {done}/{total} ({done * 100 / total}%)");
@@ -471,7 +519,7 @@ static class Screen
 
         var dir = Path.Combine(AppContext.BaseDirectory, "analysis"); Directory.CreateDirectory(dir); // exe と同じフォルダ配下
         var path = Path.Combine(dir, $"{last:yyyy-MM-dd}.html");
-        File.WriteAllText(path, Html(last, list.Count, errs.Count, hits, await Ai.Check(hits)), new UTF8Encoding(false));
+        File.WriteAllText(path, Html(last, list.Count, errs.Count, hits, await Ai.Check(hits), await Ai.CheckCodex(hits)), new UTF8Encoding(false));
         Console.WriteLine($"完了: ◎{hits.Count}銘柄 / エラー{errs.Count}件");
         foreach (var e in errs.Take(5)) Console.Error.WriteLine("ERR " + e);
         Console.WriteLine("保存先: " + path);

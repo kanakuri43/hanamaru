@@ -24,6 +24,7 @@ hanamaru/
 - 単一ファイル・自己完結(`PublishSingleFile` / `SelfContained`)、出力名 `hanamaru.exe`
 - ビルド: `cd src && dotnet publish -c Release`
 - 出力先: `src/bin/Release/net10.0/win-x64/publish/hanamaru.exe`
+- プログラムを修正したら、`dotnet build` で止めず必ず `dotnet publish -c Release` まで実行し、上記の `hanamaru.exe` を最新にしてから完了とする
 - 警告 CA1416(`Registry.GetValue`)は Windows 専用なので無視してよい
 - テストプロジェクトはない。動作確認は `hanamaru ta 7203` や `hanamaru screen 20` で行う
 
