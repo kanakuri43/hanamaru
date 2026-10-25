@@ -15,8 +15,8 @@ hanamaru                    引数なしは screen と同じ
 - 出力先 `analysis/` は実行したカレントディレクトリ配下。日付は最新の終値の日付。
 - `screen [上限]` は先頭N銘柄だけ試す用(動作確認向け)。
 - 環境変数
-  - `ANTHROPIC_API_KEY` … 設定するとスクリーニングで週足・日足◎の銘柄をAIが採点(週足優先)(未設定なら自動スキップ)
-  - `HANAMARU_CODEX_PATH` … codex.exe のパス。未指定ならnpm版・PATHから探し、見つかれば同じ指示・同じ材料で `codex exec`(read-only)でも採点して「Codexスコア」「Codexチェック」列に出す(見つからなければスキップ)。モデルは `gpt-5.6-sol`・推論 medium 固定(`Codex.Model`)、タイムアウト300秒、4並列
+  - `ANTHROPIC_API_KEY` … 設定するとスクリーニングで週足・日足◎の銘柄をAIが採点(週足優先)(未設定なら自動スキップ)。あわせてYahoo!ファイナンスの「AI値動き解説」ページ全体を読み、100字以内に要約して(スコアなし)Yahoo列に出す(解説がない銘柄は空欄)
+  - `HANAMARU_CODEX_PATH` … codex.exe のパス。未指定ならnpm版・PATHから探し、見つかれば同じ指示・同じ材料で `codex exec`(read-only)でも採点してCodex列(ヘッダは「ClaudeCode」「Codex」「Yahoo」の2段。ClaudeCode・Codexの下は「AIスコア」「AIチェック」、Yahooの下は「AI値動き解説」)に出す(見つからなければスキップ)。モデルは `gpt-5.6-sol`・推論 medium 固定(`Codex.Model`)、タイムアウト300秒、4並列
   - `STOCKS_PAR` … 同時取得数(既定24)。エラーが多いときは下げる
   - `POSITIONS_URL` … `stops` で読むGoogleスプレッドシートのCSV出力URL(`https://docs.google.com/spreadsheets/d/<ID>/export?format=csv&gid=<gid>`)。シートは「リンクを知っている全員が閲覧可」にする
   - `STOP_NEAR` … 損切ラインまでの余裕が現在値の何%以内で警告するか(既定3)

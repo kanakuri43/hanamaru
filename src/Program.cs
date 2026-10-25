@@ -1,4 +1,4 @@
-﻿// tech-analysis / prime-hanamaru スキル(ta.py / screen.py)の C# 移植
+// tech-analysis / prime-hanamaru スキル(ta.py / screen.py)の C# 移植
 //   hanamaru ta <コード>...   指標を出力し analysis/<日付>/<symbol>_<名前>.md に保存
 //   hanamaru screen [上限]    プライム全銘柄を◎判定し analysis/<日付>/prime_hanamaru.md に保存
 using System.Globalization;
@@ -254,7 +254,7 @@ static class Ai
         comment は、初心者向けに2文・合計100字程度で、結論(買ってよさそう/様子見/見送り寄り)→理由・注意点の順。RSI・Stoch・ATR・RRなどの専門用語は『買われすぎの度合い』『平均より上がりすぎていないか』『損失に対する利益の見込み』『取引量』のようにやさしい言葉に言い換える。装飾記号は使わない。
         出力は次のJSONのみ(前後に文章やコードブロックを付けない): {"pullback":整数,"upside":整数,"volume":整数,"heat":整数,"trend":整数,"comment":"..."}
         """;
-    static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(60) };
+    static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(60), DefaultRequestHeaders = { { "User-Agent", "Mozilla/5.0" } } };
 
     public static Task<Dictionary<string, (string Score, string Text)>> Check(List<Screen.Result> hits)
     {
@@ -305,6 +305,30 @@ static class Ai
         return ($"<b>{pts.Sum()}</b><br><small>{detail}</small>", d.RootElement.TryGetProperty("comment", out var c) ? c.GetString() ?? "" : "");
     }
 
+    // Yahoo!ファイナンスの「AI値動き解説」ページ全体を読み、100字以内に要約する。解説がない銘柄は載せない
+    public static async Task<Dictionary<string, string>> Topics(List<Screen.Result> hits)
+    {
+        var targets = hits.Where(x => x.Hits.ContainsKey("週足") || x.Hits.ContainsKey("日足")).ToList();
+        var res = new Dictionary<string, string>();
+        var key = Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY");
+        if (targets.Count == 0 || string.IsNullOrEmpty(key)) return res;
+        Console.Error.WriteLine($"AI値動き解説を取得中 ({targets.Count}銘柄)...");
+        await Parallel.ForEachAsync(targets, new ParallelOptions { MaxDegreeOfParallelism = 4 }, async (x, _) =>
+        {
+            try
+            {
+                var html = await Http.GetStringAsync($"https://finance.yahoo.co.jp/quote/{x.Sym}/ai-topics");
+                var src = string.Join("\n", global::System.Text.RegularExpressions.Regex.Matches(html, "AiTopicsMainContent__topicText\">([^<]*)<").Cast<global::System.Text.RegularExpressions.Match>().Select(m => WebUtility.HtmlDecode(m.Groups[1].Value)));
+                if (src == "") return; // 解説なし
+                var sys = "次はYahoo!ファイナンスの「AI値動き解説」ページ全体の文章。全体を見て重要そうな点を選び、投資初心者向けに事実だけを100字以内の日本語1〜2文にまとめる。装飾記号は付けず、要約文のみを出力する。";
+                var s = (await Ask(key, sys, src)).Replace("|", "/").Replace("*", "").ReplaceLineEndings(" ").Trim();
+                lock (res) res[x.Sym] = s;
+            }
+            catch (Exception e) { lock (res) res[x.Sym] = "取得不可: " + e.Message; }
+        });
+        return res;
+    }
+
     static string Prompt(Screen.Result x)
     {
         var tf = x.Hits.ContainsKey("週足") ? "週足" : "日足"; var w = x.Hits[tf]; // 週足優先、なければ日足の数値を渡す
@@ -313,10 +337,11 @@ static class Ai
             + $"\n{x.Ctx}\n他に◎の時間軸: {string.Join(",", x.Hits.Keys.Where(k => k != tf).DefaultIfEmpty("なし"))}";
     }
 
-    static async Task<string> Ask(string key, Screen.Result x)
+    static Task<string> Ask(string key, Screen.Result x) => Ask(key, System, Prompt(x));
+
+    static async Task<string> Ask(string key, string system, string prompt)
     {
-        var prompt = Prompt(x);
-        var body = JsonSerializer.Serialize(new { model = Model, max_tokens = 1500, system = System, messages = new[] { new { role = "user", content = prompt } } });
+        var body = JsonSerializer.Serialize(new { model = Model, max_tokens = 1500, system, messages = new[] { new { role = "user", content = prompt } } });
         using var req = new HttpRequestMessage(HttpMethod.Post, "https://api.anthropic.com/v1/messages") { Content = new StringContent(body, Encoding.UTF8, "application/json") };
         req.Headers.Add("x-api-key", key); req.Headers.Add("anthropic-version", "2023-06-01");
         using var rsp = await Http.SendAsync(req);
@@ -450,18 +475,21 @@ static class Screen
     }
 
     // 表付きの HTML を直接生成する(リンクは新しいタブで開く)
-    static string Html(DateOnly last, int scanned, int errors, List<Result> hits, Dictionary<string, (string Score, string Text)> ai, Dictionary<string, (string Score, string Text)> cx)
+    static string Html(DateOnly last, int scanned, int errors, List<Result> hits, Dictionary<string, (string Score, string Text)> ai, Dictionary<string, (string Score, string Text)> cx, Dictionary<string, string> tp)
     {
-        const string css = "body{font-family:'Yu Gothic UI',sans-serif;max-width:1500px;margin:2em auto;padding:0 1em;line-height:1.6;font-size:14px;color:#222}"
-            + "table{border-collapse:collapse;width:100%}th,td{border:1px solid #ddd;padding:6px 10px;vertical-align:top}th{background:#eef1f5;white-space:nowrap;position:sticky;top:0}"
+        const string css = "body{font-family:'Yu Gothic UI',sans-serif;max-width:1600px;margin:2em auto;padding:0 1em;line-height:1.6;font-size:14px;color:#222}"
+            + "table{border-collapse:collapse;width:100%}th,td{border:1px solid #ddd;padding:8px 10px;vertical-align:top}th{background:#eef1f5;white-space:nowrap;position:sticky;top:0;text-align:center;box-shadow:0 1px 0 #bbb}.sub th{top:35px;font-weight:normal;font-size:13px}"
             + "tr:nth-child(even){background:#fafafa}tbody tr:hover,tr:hover{background:#fff8dc}"
+            + "tbody td:nth-child(8),tbody td:nth-child(10),tbody td:nth-child(12),thead tr:first-child th:nth-child(n+8),.sub th:nth-child(odd){border-left:2px solid #aab}"
+            + "tbody td:nth-child(9),tbody td:nth-child(11),tbody td:nth-child(12){min-width:18em;font-size:13px;line-height:1.5}"
             + ".r{text-align:right}.c{text-align:center;color:#c0392b;font-weight:bold}.nw{white-space:nowrap}.score{white-space:nowrap;text-align:center}.score b{font-size:1.3em}.avg{background:#fff1c9}.avg b{font-size:1.9em;color:#c0392b}small,.note{color:#555}";
         string E(string s) => WebUtility.HtmlEncode(s);
         string Join(Result x, Func<Hit, string> f) => string.Join(" / ", x.Hits.Select(kv => (x.Hits.Count > 1 ? kv.Key + ":" : "") + f(kv.Value)));
         var h = new StringBuilder();
         h.Append($"<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>プライム◎スクリーニング {last:yyyy-MM-dd}</title><style>{css}</style></head><body>");
         h.Append($"<h1>プライム◎スクリーニング ({last:yyyy-MM-dd})</h1><p>対象 {scanned} 銘柄 / ◎ <b>{hits.Count}</b> 銘柄 / 取得エラー {errors} 件</p><h2>◎銘柄</h2>");
-        h.Append("<table><tr><th>銘柄名</th><th>終値</th><th>月足</th><th>週足</th><th>日足</th><th>損切り</th><th>平均スコア</th><th>AIスコア</th><th>AIチェック(週足・日足◎)</th><th>Codexスコア</th><th>Codexチェック</th></tr>");
+        h.Append("<table><thead><tr>" + string.Concat(new[] { "銘柄名", "終値", "月足", "週足", "日足", "損切り", "平均スコア" }.Select(t => $"<th rowspan=\"2\">{t}</th>")) + "<th colspan=\"2\">ClaudeCode</th><th colspan=\"2\">Codex</th><th>Yahoo</th></tr>"
+            + "<tr class=\"sub\">" + string.Concat(Enumerable.Repeat("<th>AIスコア</th><th>AIチェック</th>", 2)) + "<th>AI値動き解説</th></tr></thead><tbody>");
         // AIスコア(Score は "<b>合計</b>..." 形式)の高い順。スコアなしは末尾、同点は元の順
         double Pts(Result x) => new[] { ai, cx }.Select(d => d.TryGetValue(x.Sym, out var a) && int.TryParse(a.Score.Split("<b>")[^1].Split("</b>")[0], out var p) ? p : (int?)null).Where(p => p != null).Select(p => p!.Value).DefaultIfEmpty(-1).Average();
         foreach (var x in hits.OrderByDescending(Pts))
@@ -470,10 +498,11 @@ static class Screen
             foreach (var t in new[] { "月足", "週足", "日足" }) h.Append($"<td class=\"c\">{(x.Hits.ContainsKey(t) ? "◎" : "")}</td>");
             h.Append($"<td class=\"r\">{Join(x, j => j.Stop.ToString("#,0"))}</td><td class=\"score avg\">{(Pts(x) >= 0 ? $"<b>{Math.Round(Pts(x), MidpointRounding.AwayFromZero)}</b>" : "")}</td>");
             foreach (var d in new[] { ai, cx }) h.Append(d.TryGetValue(x.Sym, out var a) ? $"<td class=\"score\">{a.Score}</td><td>{E(a.Text)}</td>" : "<td></td><td></td>");
+            h.Append($"<td>{(tp.TryGetValue(x.Sym, out var yt) ? E(yt) : "")}</td>");
             h.Append("</tr>");
         }
-        if (hits.Count == 0) h.Append("<tr><td colspan=\"9\">◎なし</td></tr>");
-        h.Append($"</table><p class=\"note\">AIスコア内訳(100点満点): 押=押し目の質(25) 余=上値余地(20) 出=出来高の傾向(20) 熱=過熱感の無さ(15) 勢=トレンドの強さ(20)<br>AIモデル: {Ai.Model} / Codex: {Codex.Model} (medium)</p>");
+        if (hits.Count == 0) h.Append("<tr><td colspan=\"12\">◎なし</td></tr>");
+        h.Append($"</tbody></table><p class=\"note\">AIスコア内訳(100点満点): 押=押し目の質(25) 余=上値余地(20) 出=出来高の傾向(20) 熱=過熱感の無さ(15) 勢=トレンドの強さ(20)<br>AIモデル: {Ai.Model} / Codex: {Codex.Model} (medium)</p>");
         h.Append("<hr><p class=\"note\">損切り=短期線-1ATR、目標=直近60本高値。ファンダ・決算日程は未考慮、投資判断は自己責任。</p></body></html>");
         return h.ToString();
     }
@@ -519,7 +548,7 @@ static class Screen
 
         var dir = Path.Combine(AppContext.BaseDirectory, "analysis"); Directory.CreateDirectory(dir); // exe と同じフォルダ配下
         var path = Path.Combine(dir, $"{last:yyyy-MM-dd}.html");
-        File.WriteAllText(path, Html(last, list.Count, errs.Count, hits, await Ai.Check(hits), await Ai.CheckCodex(hits)), new UTF8Encoding(false));
+        File.WriteAllText(path, Html(last, list.Count, errs.Count, hits, await Ai.Check(hits), await Ai.CheckCodex(hits), await Ai.Topics(hits)), new UTF8Encoding(false));
         Console.WriteLine($"完了: ◎{hits.Count}銘柄 / エラー{errs.Count}件");
         foreach (var e in errs.Take(5)) Console.Error.WriteLine("ERR " + e);
         Console.WriteLine("保存先: " + path);
