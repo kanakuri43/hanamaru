@@ -478,11 +478,17 @@ static class Screen
     static string Html(DateOnly last, int scanned, int errors, List<Result> hits, Dictionary<string, (string Score, string Text)> ai, Dictionary<string, (string Score, string Text)> cx, Dictionary<string, string> tp)
     {
         const string css = "body{font-family:'Yu Gothic UI',sans-serif;max-width:1600px;margin:2em auto;padding:0 1em;line-height:1.6;font-size:14px;color:#222}"
-            + "table{border-collapse:collapse;width:100%}th,td{border:1px solid #ddd;padding:8px 10px;vertical-align:top}th{background:#eef1f5;white-space:nowrap;position:sticky;top:0;text-align:center;box-shadow:0 1px 0 #bbb}.sub th{top:35px;font-weight:normal;font-size:13px}"
-            + "tr:nth-child(even){background:#fafafa}tbody tr:hover,tr:hover{background:#fff8dc}"
-            + "tbody td:nth-child(8),tbody td:nth-child(10),tbody td:nth-child(12),thead tr:first-child th:nth-child(n+8),.sub th:nth-child(odd){border-left:2px solid #aab}"
+            + "table{border-collapse:separate;border-spacing:0;width:100%;border-top:1px solid #ddd;border-left:1px solid #ddd}th,td{border:0 solid #ddd;border-width:0 1px 1px 0;padding:8px 10px;vertical-align:top;box-sizing:border-box}th{background:#eef1f5;white-space:nowrap;position:sticky;top:0;text-align:center;z-index:2}.sub th{top:35px;font-weight:normal;font-size:13px}"
+            + "tbody td{background:#fff}tbody tr:nth-child(even) td{background:#fafafa}tbody tr:hover td{background:#fff8dc}"
+            // 銘柄名〜平均スコア(1〜7列目)は横スクロールしても左に固定する。left は各列の幅の累計
+            + "thead tr:first-child th:nth-child(-n+7),tbody td:nth-child(-n+7){position:sticky;z-index:1}thead tr:first-child th:nth-child(-n+7){z-index:3}"
+            + "tbody td:nth-child(1),thead tr:first-child th:nth-child(1){left:0;width:260px;min-width:260px}tbody td:nth-child(2),thead tr:first-child th:nth-child(2){left:260px;width:80px;min-width:80px}"
+            + "tbody td:nth-child(3),thead tr:first-child th:nth-child(3){left:340px;width:50px;min-width:50px}tbody td:nth-child(4),thead tr:first-child th:nth-child(4){left:390px;width:50px;min-width:50px}"
+            + "tbody td:nth-child(5),thead tr:first-child th:nth-child(5){left:440px;width:50px;min-width:50px}tbody td:nth-child(6),thead tr:first-child th:nth-child(6){left:490px;width:80px;min-width:80px}"
+            + "tbody td:nth-child(7),thead tr:first-child th:nth-child(7){left:570px;width:90px;min-width:90px;border-right:2px solid #aab}"
+            + "tbody td:nth-child(10),tbody td:nth-child(12),thead tr:first-child th:nth-child(n+8),.sub th:nth-child(odd){border-left:2px solid #aab}"
             + "tbody td:nth-child(9),tbody td:nth-child(11),tbody td:nth-child(12){min-width:18em;font-size:13px;line-height:1.5}"
-            + ".r{text-align:right}.c{text-align:center;color:#c0392b;font-weight:bold}.nw{white-space:nowrap}.score{white-space:nowrap;text-align:center}.score b{font-size:1.3em}.avg{background:#fff1c9}.avg b{font-size:1.9em;color:#c0392b}small,.note{color:#555}";
+            + ".r{text-align:right}.c{text-align:center;color:#c0392b;font-weight:bold}.nw{white-space:nowrap}.score{white-space:nowrap;text-align:center}.score b{font-size:1.3em}tbody td.avg,tbody tr:nth-child(even) td.avg{background:#fff1c9}.avg b{font-size:1.9em;color:#c0392b}small,.note{color:#555}";
         string E(string s) => WebUtility.HtmlEncode(s);
         string Join(Result x, Func<Hit, string> f) => string.Join(" / ", x.Hits.Select(kv => (x.Hits.Count > 1 ? kv.Key + ":" : "") + f(kv.Value)));
         var h = new StringBuilder();
