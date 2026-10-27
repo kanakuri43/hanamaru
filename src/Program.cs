@@ -206,18 +206,6 @@ static class Positions
             catch (Exception e) { m[^1] = "取得エラー"; Console.Error.WriteLine($"ERR {f[0]}: {e.Message}"); }
         }
         Console.WriteLine($"保有{open}件中、警告{warn}件");
-        // POSITIONS_WRITE_URL: Apps Script ウェブアプリのURL。README 参照
-        var wurl = Environment.GetEnvironmentVariable("POSITIONS_WRITE_URL");
-        if (wurl != null)
-        {
-            try
-            {
-                var res = await http.PostAsync(wurl, new StringContent(JsonSerializer.Serialize(m), Encoding.UTF8, "text/plain"));
-                var body = await res.Content.ReadAsStringAsync();
-                Console.WriteLine(body.Trim() == "ok" ? "M列に書き込みました" : $"M列への書き込みに失敗: {body[..Math.Min(body.Length, 200)]}");
-            }
-            catch (Exception e) { Console.Error.WriteLine($"M列への書き込みに失敗: {e.Message}"); }
-        }
         return 0;
     }
 

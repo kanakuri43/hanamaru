@@ -34,4 +34,4 @@ hanamaru/
 - `STOCKS_PAR` で同時取得数を変更(既定24)
 - 指標・判定・AIの仕様を変えたら `README.md` も更新する
 - コミットメッセージ・返答は日本語で書く
-- `POSITIONS_URL` / `POSITIONS_WRITE_URL`(ポジションシートの損切チェック `stops`)は Apps Script 方式。Sheets API(サービスアカウント)には切り替えない方針
+- `POSITIONS_URL`(ポジションシートの損切チェック `stops`)はCSV読み取りのみ。シートへの書き込み(旧 `POSITIONS_WRITE_URL`)は廃止した
